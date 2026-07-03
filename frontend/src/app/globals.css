@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: `dark:` utilities apply when an ancestor has `.dark`. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+}
+.dark {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+/* Light theme (default) */
+body {
+  color: #1e293b;
+  background-color: #eef2f7;
+  background-image:
+    radial-gradient(1100px 600px at 85% -8%, rgba(99, 102, 241, 0.1), transparent 60%),
+    radial-gradient(900px 520px at -5% 5%, rgba(139, 92, 246, 0.08), transparent 55%);
+  background-attachment: fixed;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Dark theme */
+.dark body {
+  color: #e2e8f0;
+  background-color: #070b16;
+  background-image:
+    radial-gradient(1100px 600px at 85% -8%, rgba(99, 102, 241, 0.18), transparent 60%),
+    radial-gradient(900px 520px at -5% 5%, rgba(139, 92, 246, 0.12), transparent 55%),
+    radial-gradient(760px 760px at 50% 118%, rgba(16, 185, 129, 0.07), transparent 60%);
+}
+
+/* Glass panel surface — adapts to theme */
+.glass {
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.dark .glass {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.glass-hover {
+  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+}
+.glass-hover:hover {
+  background: rgba(15, 23, 42, 0.03);
+  border-color: rgba(15, 23, 42, 0.16);
+}
+.dark .glass-hover:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+  border-radius: 8px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-in {
+  animation: fadeUp 0.35s ease both;
+}
