@@ -55,7 +55,7 @@ export default function ClassificationDetail() {
           subtitle="Weibull cumulative hazard, hour by hour. The red dashed line at 1.0 is the failure threshold."
           info="The risk score is the fitted Weibull model's cumulative hazard H(t) at the part's age. It climbs from 0 as the part ages and drops back toward 0 each time the part is replaced (the sawtooth). Reaching 1.0 = the characteristic life (63% cumulative failure probability) = failure. Read straight from the survival model — no hand-tuned blend."
         />
-        <RiskOverTimeChart data={data.timeseries} />
+        <RiskOverTimeChart data={data.timeseries} asOf={data.as_of} />
       </GlassCard>
 
       <GlassCard className="p-5">
@@ -70,6 +70,7 @@ export default function ClassificationDetail() {
           rulDays={data.rul_days}
           ciLow={data.rul_ci_low_days}
           ciHigh={data.rul_ci_high_days}
+          asOf={data.as_of}
         />
         <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
           Oldest part <span className="font-medium text-slate-700 dark:text-slate-200">{prettyComp(data.current_comp)}</span> has run{" "}

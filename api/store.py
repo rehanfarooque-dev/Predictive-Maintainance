@@ -121,7 +121,9 @@ class ArtifactStore:
         if as_of is None:
             return pd.Timestamp(self.timestamps[-1])
         target = np.datetime64(pd.Timestamp(as_of))
-        idx = int(np.searchsorted(self.timestamps, target))
+        # side='right' - 1 gives the last available timestamp <= target (true "as-of" semantics).
+        # side='left' (old) would snap forward to >= target, potentially jumping hours ahead.
+        idx = int(np.searchsorted(self.timestamps, target, side="right")) - 1
         idx = min(max(idx, 0), len(self.timestamps) - 1)
         return pd.Timestamp(self.timestamps[idx])
 
@@ -262,7 +264,9 @@ class ArtifactStore:
         if machine_id not in self._rul_by_machine.index:
             return None
         ts = self.resolve_as_of(as_of)
-        mdf = self.scored[self.scored["machineID"] == machine_id].sort_values("datetime")
+        mdf = self.scored[
+            (self.scored["machineID"] == machine_id) & (self.scored["datetime"] <= ts)
+        ].sort_values("datetime")
         meta = next((m for m in self.machines_meta if int(m["machineID"]) == machine_id), {})
 
         cur = mdf[mdf["datetime"] == ts]
@@ -286,32 +290,72 @@ class ArtifactStore:
         viol = sensor_violations({s: float(cur[s]) for s in SENSOR_COLS}, self.bands[model_name])
         rs = compute_risk_score(hazard, viol)
 
-        # downsample timeseries to ~1000 points
+        # Downsample to ~1000 points, but always include the last row (the as-of point)
+        # so the chart always ends exactly at the selected timestamp.
         stride = max(1, len(mdf) // 1000)
-        sub = mdf.iloc[::stride].reset_index(drop=True)
+        sampled = mdf.iloc[::stride]
+        last_row = mdf.iloc[[-1]]
+        if sampled.iloc[-1]["datetime"] != last_row.iloc[0]["datetime"]:
+            sampled = pd.concat([sampled, last_row])
+        sub = sampled.reset_index(drop=True)
 
-        # --- risk_score per timeseries row = Weibull cumulative hazard at that row's part-age ---
-        # Elapsed days at each row from the hours_since features (fast merge, no per-row fit).
+        # --- risk_score per timeseries row: H(t | X_row) ---
+        # Each row gets its own covariate snapshot (sensor levels, error counts, model, comp)
+        # at that point in time, so the hazard reflects the machine's actual historical state
+        # rather than projecting today's covariates backward. This gives the true sawtooth:
+        # H climbs from 0 after each replacement and reflects real operating conditions.
         fm_m = self.feat_by_machine[machine_id]
         hcols = [f"hours_since_{c}" for c in COMP_COLS]
+        all_cov_cols = [c for c in COVARIATE_FEATURE_COLS + self.model_cols if c in fm_m.columns]
+
         sub_dt = sub[["datetime"]].copy()
         sub_dt["datetime"] = sub_dt["datetime"].astype("datetime64[ns]")
-        fm_ts = fm_m[["datetime"] + hcols].sort_values("datetime").copy()
-        fm_ts["datetime"] = fm_ts["datetime"].astype("datetime64[ns]")
+        merge_right = fm_m[["datetime"] + hcols + all_cov_cols].sort_values("datetime").copy()
+        merge_right["datetime"] = merge_right["datetime"].astype("datetime64[ns]")
         feat_ts = pd.merge_asof(
-            sub_dt, fm_ts, on="datetime", direction="backward",
+            sub_dt, merge_right, on="datetime", direction="backward",
         ).reset_index(drop=True)
-        el_arr = feat_ts[hcols].fillna(8760.0).max(axis=1).values / 24.0
 
-        # H(t) = (t/λ)^ρ for this machine's covariate profile — one vectorised call over the
-        # unique part-ages, mapped back to every row. Climbs from 0 and resets after each
-        # replacement (the sawtooth); reaching 1.0 = characteristic life = failure.
-        uniq = np.unique(np.round(el_arr, 3))
-        ch_series = self.aft.predict_cumulative_hazard(X, times=uniq).iloc[:, 0]
-        xs = ch_series.index.to_numpy(dtype=float)
-        ys = ch_series.to_numpy(dtype=float)
-        order = np.argsort(xs)
-        ts_rs = np.round(np.clip(np.interp(el_arr, xs[order], ys[order]), 0.0, None), 3)
+        # Elapsed days = age of the oldest (highest hours_since) component at each row
+        el_arr = feat_ts[hcols].fillna(8760.0).max(axis=1).values / 24.0
+        max_comp_idx = feat_ts[hcols].fillna(8760.0).values.argmax(axis=1)
+
+        # Build per-row covariate matrix aligned to the fitted model's covariate column order
+        n_rows = len(feat_ts)
+        cov_data: dict = {}
+        for col in COVARIATE_FEATURE_COLS:
+            v = feat_ts[col].to_numpy(dtype=float) if col in feat_ts.columns else np.zeros(n_rows)
+            nan_m = np.isnan(v)
+            if nan_m.any():
+                v = np.where(nan_m, float(np.nanmedian(v)) if not nan_m.all() else 0.0, v)
+            cov_data[col] = v
+        for mc in self.model_cols:
+            v = feat_ts[mc].to_numpy(dtype=float) if mc in feat_ts.columns else np.zeros(n_rows)
+            cov_data[mc] = np.nan_to_num(v, nan=0.0)
+        for c in COMP_COLS:
+            cov_data[f"comp_{c}"] = np.zeros(n_rows)
+        for i, ci in enumerate(max_comp_idx):
+            cov_data[f"comp_{COMP_COLS[ci]}"][i] = 1.0
+
+        cov_df_all = pd.DataFrame(cov_data)
+        for c in self.covariate_cols:
+            if c not in cov_df_all.columns:
+                cov_df_all[c] = 0.0
+        cov_df_all = cov_df_all[self.covariate_cols]
+
+        # Vectorised H(t): one predict_cumulative_hazard call over all unique times,
+        # for ALL rows at once (output shape: n_times × n_rows). Then pick H(el_arr[i])
+        # from column i via linear interpolation — no Python loop, no hardcoded formula.
+        uniq_times = np.clip(np.unique(np.round(el_arr, 3)), 0.001, None)
+        ch_df = self.aft.predict_cumulative_hazard(cov_df_all, times=uniq_times)
+        time_idx = ch_df.index.to_numpy(dtype=float)
+        ch_arr = ch_df.to_numpy(dtype=float)  # (n_times, n_rows)
+        ts_rs = np.where(
+            el_arr <= 0.0,
+            0.0,
+            np.array([np.interp(el_arr[i], time_idx, ch_arr[:, i]) for i in range(n_rows)]),
+        )
+        ts_rs = np.round(np.clip(ts_rs, 0.0, None), 3)
 
         timeseries = [
             {

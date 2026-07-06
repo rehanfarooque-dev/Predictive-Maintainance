@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -59,48 +60,186 @@ function useChartTheme() {
   };
 }
 
-function shortDate(iso: string): string {
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+const RISK_WINDOWS = [
+  { label: "24h",  hours: 24 },
+  { label: "3d",   hours: 72 },
+  { label: "7d",   hours: 168 },
+  { label: "30d",  hours: 720 },
+  { label: "All",  hours: null },
+] as const;
+
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function fmtTs(ms: number, spanHours: number): string {
+  const d = new Date(ms);
+  if (spanHours <= 48)
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (spanHours <= 336)
+    return (
+      d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) +
+      " " +
+      d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
+    );
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-export function RiskOverTimeChart({ data }: { data: TimeseriesPoint[] }) {
-  const ct = useChartTheme();
+function fmtTsLong(ms: number): string {
+  const d = new Date(ms);
   return (
-    <ResponsiveContainer width="100%" height={230}>
-      <AreaChart data={data} margin={{ top: 8, right: 14, bottom: 0, left: -10 }}>
-        <defs>
-          <linearGradient id="rsGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.65} />
-            <stop offset="55%" stopColor="#fb923c" stopOpacity={0.3} />
-            <stop offset="100%" stopColor="#fb923c" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid stroke={ct.grid} vertical={false} />
-        <XAxis dataKey="datetime" tickFormatter={shortDate} tick={ct.tick} minTickGap={48} stroke={ct.axisLine} />
-        <YAxis
-          domain={[0, (max: number) => Math.max(1.2, Math.ceil(max * 10) / 10)]}
-          tick={ct.tick}
-          stroke={ct.axisLine}
-          tickFormatter={(v) => Number(v).toFixed(1)}
-        />
-        <Tooltip
-          {...ct.tt}
-          labelFormatter={(l) => fmtDateTime(String(l))}
-          formatter={(v, name) => {
-            if (name === "risk_score") return [Number(v).toFixed(2), "Risk score (hazard)"];
-            return [v, name];
-          }}
-        />
-        <ReferenceLine
-          y={1.0}
-          stroke="#f43f5e"
-          strokeDasharray="4 4"
-          label={{ value: "failure (1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
-        />
-        <Area type="monotone" dataKey="risk_score" stroke="#fb923c" strokeWidth={2} fill="url(#rsGrad)" dot={false} />
-      </AreaChart>
-    </ResponsiveContainer>
+    d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) +
+    " " +
+    d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
+  );
+}
+
+// ─── RiskOverTimeChart ───────────────────────────────────────────────────────
+
+export function RiskOverTimeChart({ data, asOf }: { data: TimeseriesPoint[]; asOf?: string }) {
+  const ct = useChartTheme();
+  const [windowHours, setWindowHours] = useState<number | null>(168);
+
+  // Convert ISO strings → numeric ms once so everything downstream is numeric.
+  // Recharts XAxis with type="number" + scale="time" gives proper proportional spacing.
+  const allPoints = useMemo(
+    () => data.map((p) => ({ ...p, ts: new Date(p.datetime).getTime() })),
+    [data],
+  );
+
+  const asOfMs = useMemo(() => (asOf ? new Date(asOf).getTime() : null), [asOf]);
+
+  // Window anchors to the selected as_of point so "7d" = last 7 days before selection.
+  const anchorMs = asOfMs ?? (allPoints.length > 0 ? allPoints[allPoints.length - 1].ts : 0);
+
+  const visible = useMemo(() => {
+    if (!windowHours || allPoints.length === 0) return allPoints;
+    const cutoff = anchorMs - windowHours * 3_600_000;
+    return allPoints.filter((p) => p.ts >= cutoff);
+  }, [allPoints, windowHours, anchorMs]);
+
+  const spanHours = useMemo(() => {
+    if (visible.length < 2) return windowHours ?? 8760;
+    return (visible[visible.length - 1].ts - visible[0].ts) / 3_600_000;
+  }, [visible, windowHours]);
+
+  const domainMin = visible.length > 0 ? visible[0].ts : 0;
+  const domainMax = visible.length > 0 ? visible[visible.length - 1].ts : 1;
+
+  const asOfLabel = asOfMs ? fmtTs(asOfMs, 0) : ""; // always date+time for the marker label
+
+  return (
+    <div>
+      {/* ── window selector ── */}
+      <div className="mb-3 flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">Window</span>
+        {RISK_WINDOWS.map((w) => (
+          <button
+            key={w.label}
+            onClick={() => setWindowHours(w.hours)}
+            className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+              windowHours === w.hours
+                ? "bg-indigo-500 text-white"
+                : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-400 dark:hover:bg-white/20"
+            }`}
+          >
+            {w.label}
+          </button>
+        ))}
+        {asOfMs && (
+          <span className="ml-auto text-[10px] font-medium text-indigo-500 dark:text-indigo-400">
+            ▌ selected: {fmtTsLong(asOfMs)}
+          </span>
+        )}
+      </div>
+
+      <ResponsiveContainer width="100%" height={240}>
+        <AreaChart data={visible} margin={{ top: 18, right: 16, bottom: 4, left: -8 }}>
+          <defs>
+            <linearGradient id="rsGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"   stopColor="#f43f5e" stopOpacity={0.6} />
+              <stop offset="60%"  stopColor="#fb923c" stopOpacity={0.25} />
+              <stop offset="100%" stopColor="#fb923c" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+
+          <CartesianGrid stroke={ct.grid} vertical={false} />
+
+          {/* Numeric time axis — proportional spacing, no categorical distortion */}
+          <XAxis
+            dataKey="ts"
+            type="number"
+            scale="time"
+            domain={[domainMin, domainMax]}
+            tickFormatter={(v) => fmtTs(Number(v), spanHours)}
+            tick={ct.tick}
+            minTickGap={64}
+            stroke={ct.axisLine}
+          />
+
+          <YAxis
+            domain={[0, (max: number) => Math.max(1.2, Math.ceil(max * 10) / 10 + 0.1)]}
+            tick={ct.tick}
+            stroke={ct.axisLine}
+            tickFormatter={(v) => Number(v).toFixed(1)}
+          />
+
+          <Tooltip
+            {...ct.tt}
+            labelFormatter={(v) => fmtTsLong(Number(v))}
+            formatter={(v, name) =>
+              name === "risk_score"
+                ? [Number(v).toFixed(3), "H(t) cumulative hazard"]
+                : [v, name]
+            }
+          />
+
+          {/* Shade everything after the selected timestamp (future data) */}
+          {asOfMs && domainMax > asOfMs && (
+            <ReferenceArea
+              x1={asOfMs}
+              x2={domainMax}
+              fill="#818cf8"
+              fillOpacity={0.07}
+            />
+          )}
+
+          {/* Failure threshold line */}
+          <ReferenceLine
+            y={1.0}
+            stroke="#f43f5e"
+            strokeDasharray="5 4"
+            label={{ value: "failure (1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
+          />
+
+          {/* "You are here" vertical line */}
+          {asOfMs && (
+            <ReferenceLine
+              x={asOfMs}
+              stroke="#6366f1"
+              strokeWidth={2}
+              strokeDasharray="4 3"
+              label={{
+                value: `◀ ${asOfLabel}`,
+                position: "insideTopLeft",
+                fontSize: 10,
+                fontWeight: 700,
+                fill: "#6366f1",
+              }}
+            />
+          )}
+
+          <Area
+            type="monotone"
+            dataKey="risk_score"
+            stroke="#fb923c"
+            strokeWidth={2.2}
+            fill="url(#rsGrad)"
+            dot={false}
+            isAnimationActive={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -118,7 +257,7 @@ export function SensorTraceChart({
     <ResponsiveContainer width="100%" height={210}>
       <LineChart data={data} margin={{ top: 8, right: 14, bottom: 0, left: -10 }}>
         <CartesianGrid stroke={ct.grid} vertical={false} />
-        <XAxis dataKey="datetime" tickFormatter={shortDate} tick={ct.tick} minTickGap={48} stroke={ct.axisLine} />
+        <XAxis dataKey="datetime" tickFormatter={(iso) => fmtTs(new Date(iso).getTime(), 720)} tick={ct.tick} minTickGap={48} stroke={ct.axisLine} />
         <YAxis tick={ct.tick} domain={["auto", "auto"]} stroke={ct.axisLine} />
         <Tooltip {...ct.tt} labelFormatter={(l) => fmtDateTime(String(l))} />
         {band && <ReferenceArea y1={band.lower} y2={band.upper} fill="#34d399" fillOpacity={0.1} />}
@@ -136,21 +275,54 @@ export function SurvivalCurveChart({
   rulDays,
   ciLow,
   ciHigh,
+  asOf,
 }: {
   curve: SurvivalPoint[];
   baseline?: SurvivalPoint[];
   rulDays: number;
   ciLow: number;
   ciHigh: number;
+  asOf?: string;
 }) {
   const ct = useChartTheme();
+
+  // Convert a days_ahead offset to an actual calendar date string
+  const daysToDate = (days: number): string => {
+    if (!asOf) return `+${Math.round(days)}d`;
+    const d = new Date(asOf);
+    d.setTime(d.getTime() + days * 86_400_000);
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  };
+
   const merged = curve.map((p) => {
     const b = baseline?.find((q) => Math.abs(q.days_ahead - p.days_ahead) < 1.5);
     return { days_ahead: p.days_ahead, model: p.survival_prob, baseline: b?.survival_prob };
   });
+
+  // Domain + clean evenly-spaced ticks so the axis is proportional and uncrowded.
+  const maxDays = merged.length > 0 ? merged[merged.length - 1].days_ahead : 180;
+  const ticks = useMemo(() => {
+    // Aim for ~6 ticks at "nice" day intervals (30/45/60...).
+    const targetCount = 6;
+    const rawStep = maxDays / targetCount;
+    const niceSteps = [7, 14, 15, 30, 45, 60, 90];
+    const step = niceSteps.find((s) => s >= rawStep) ?? 90;
+    const out: number[] = [];
+    for (let d = 0; d <= maxDays + 0.5; d += step) out.push(Math.round(d));
+    return out;
+  }, [maxDays]);
+
+  // Label on the RUL reference line: actual date when possible
+  const rulLineLabel =
+    rulDays > 0
+      ? asOf
+        ? `Replace by ${daysToDate(rulDays)}`
+        : `RUL ≈ ${Math.round(rulDays)} days`
+      : "";
+
   return (
-    <ResponsiveContainer width="100%" height={270}>
-      <ComposedChart data={merged} margin={{ top: 30, right: 22, bottom: 6, left: -6 }}>
+    <ResponsiveContainer width="100%" height={290}>
+      <ComposedChart data={merged} margin={{ top: 30, right: 22, bottom: 28, left: -6 }}>
         <defs>
           <linearGradient id="survGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.45} />
@@ -160,35 +332,72 @@ export function SurvivalCurveChart({
         <CartesianGrid stroke={ct.grid} vertical={false} />
         <XAxis
           dataKey="days_ahead"
+          type="number"
+          scale="linear"
+          domain={[0, maxDays]}
+          ticks={ticks}
+          interval={0}
           tick={ct.tick}
           stroke={ct.axisLine}
-          label={{ value: "days ahead", position: "insideBottom", offset: -2, fontSize: 11, fill: "#64748b" }}
+          tickFormatter={(v) => daysToDate(Number(v))}
+          tickMargin={8}
+          label={
+            asOf
+              ? { value: "projected date →", position: "insideBottomRight", offset: -4, fontSize: 10, fill: "#94a3b8" }
+              : { value: "days ahead", position: "insideBottom", offset: -2, fontSize: 11, fill: "#64748b" }
+          }
         />
-        <YAxis domain={[0, 1]} ticks={[0, 0.25, 0.5, 0.75, 1]} tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`} tick={ct.tick} stroke={ct.axisLine} />
+        <YAxis
+          domain={[0, 1]}
+          ticks={[0, 0.25, 0.5, 0.75, 1]}
+          tickFormatter={(v) => `${Math.round(Number(v) * 100)}%`}
+          tick={ct.tick}
+          stroke={ct.axisLine}
+        />
         <Tooltip
           {...ct.tt}
-          formatter={(v, n) => [`${(Number(v) * 100).toFixed(0)}%`, n === "model" ? "this machine" : "typical machine"]}
-          labelFormatter={(d) => `day +${d}`}
+          formatter={(v, n) => [
+            `${(Number(v) * 100).toFixed(0)}%`,
+            n === "model" ? "this machine" : "typical machine",
+          ]}
+          labelFormatter={(d) =>
+            asOf
+              ? `${daysToDate(Number(d))} · +${Math.round(Number(d))} days`
+              : `day +${d}`
+          }
         />
-        {/* likely-range (confidence) band on the time axis */}
-        <ReferenceArea x1={ciLow} x2={ciHigh} fill="#8b5cf6" fillOpacity={0.1}
-          label={{ value: "likely range", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }} />
-        {/* median (50%) guide */}
-        <ReferenceLine y={0.5} stroke={ct.axisLine} strokeDasharray="3 3"
-          label={{ value: "50% — median life", position: "insideBottomRight", fontSize: 9, fill: "#94a3b8" }} />
+        {/* likely-range (confidence) band */}
+        <ReferenceArea
+          x1={ciLow}
+          x2={ciHigh}
+          fill="#8b5cf6"
+          fillOpacity={0.1}
+          label={{ value: "typical range", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }}
+        />
+        {/* 50% guide line */}
+        <ReferenceLine
+          y={0.5}
+          stroke={ct.axisLine}
+          strokeDasharray="3 3"
+          label={{ value: "50% — median life", position: "insideBottomRight", fontSize: 9, fill: "#94a3b8" }}
+        />
         {/* curves */}
         <Area type="monotone" dataKey="model" name="this machine" stroke="#8b5cf6" fill="url(#survGrad)" strokeWidth={2.4} />
-        {baseline && <Line type="monotone" dataKey="baseline" name="typical machine" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={1.4} />}
-        {/* RUL marker — clearly labeled, with a dot at the 50% crossing */}
+        {baseline && (
+          <Line type="monotone" dataKey="baseline" name="typical machine" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={1.4} />
+        )}
+        {/* RUL / replace-by marker */}
         {rulDays > 0 && (
           <ReferenceLine
             x={rulDays}
             stroke="#f43f5e"
             strokeWidth={1.8}
-            label={{ value: `RUL ≈ ${Math.round(rulDays)} days`, position: "top", fontSize: 11, fontWeight: 700, fill: "#f43f5e" }}
+            label={{ value: rulLineLabel, position: "top", fontSize: 11, fontWeight: 700, fill: "#f43f5e" }}
           />
         )}
-        {rulDays > 0 && <ReferenceDot x={rulDays} y={0.5} r={4.5} fill="#f43f5e" stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />}
+        {rulDays > 0 && (
+          <ReferenceDot x={rulDays} y={0.5} r={4.5} fill="#f43f5e" stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />
+        )}
       </ComposedChart>
     </ResponsiveContainer>
   );
