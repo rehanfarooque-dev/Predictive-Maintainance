@@ -3,23 +3,24 @@
 import Link from "next/link";
 
 import type { FleetItem } from "@/lib/types";
-import { URGENCY_META, rulLabel, fmtPct } from "@/lib/format";
+import { URGENCY_META, fmtPct, recurrenceUrgency, recurrenceTimeLeft } from "@/lib/format";
 import { cn } from "@/components/ui";
 
-// A 100-machine status heatmap — each tile is a machine, colored by urgency.
-// Tiles with at_risk=true pulse to show the classifier sees imminent failure.
+// A 100-machine status heatmap. Tile COLOUR = recurrence urgency (time since the last
+// classifier-predicted failure); a pulsing red ring = the 12h classifier sees an imminent
+// failure right now.
 export function FleetMap({ items }: { items: FleetItem[] }) {
   const sorted = [...items].sort((a, b) => a.machineID - b.machineID);
   return (
     <div>
       <div className="flex flex-wrap gap-1.5">
         {sorted.map((it) => {
-          const u = URGENCY_META[it.urgency];
+          const u = URGENCY_META[recurrenceUrgency(it)];
           return (
             <Link
               key={it.machineID}
               href={`/risk/${it.machineID}`}
-              title={`Machine ${it.machineID} · ${u.label} · service in ${it.days_until_service}d · failure chance ${fmtPct(it.classifier_risk)} · RUL ${rulLabel(it.rul_days, it.is_capped)}`}
+              title={`Machine ${it.machineID} · ${u.label} · ${recurrenceTimeLeft(it)} to service · 12h failure chance ${fmtPct(it.classifier_risk)}`}
               className={cn(
                 "grid h-9 w-9 place-items-center rounded-md text-[10px] font-bold text-slate-950/80 transition-all hover:z-10 hover:scale-125",
                 it.at_risk && "animate-pulse ring-2 ring-rose-500 ring-offset-1",

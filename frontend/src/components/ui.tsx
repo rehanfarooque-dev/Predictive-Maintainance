@@ -25,7 +25,7 @@ export function GlassCard({
   hover?: boolean;
 }) {
   return (
-    <div className={cn("glass rounded-2xl shadow-lg shadow-slate-900/5 dark:shadow-black/30", hover && "glass-hover", className)}>
+    <div className={cn("glass rounded-2xl", hover && "glass-hover", className)}>
       {children}
     </div>
   );
@@ -93,8 +93,8 @@ export function StatCard({
       type={onClick ? "button" : undefined}
       onClick={onClick}
       className={cn(
-        "animate-in glass relative w-full overflow-hidden rounded-2xl p-5 text-left shadow-lg shadow-slate-900/5 transition-all duration-150 dark:shadow-black/30",
-        onClick && "cursor-pointer hover:scale-[1.02] hover:shadow-xl active:scale-[0.99]",
+        "animate-in glass relative w-full overflow-hidden rounded-2xl p-5 text-left transition-all duration-150",
+        onClick && "glass-hover cursor-pointer active:scale-[0.99]",
         active && "ring-2 ring-offset-1",
       )}
     >
@@ -180,6 +180,27 @@ export function ErrorBlock({ error }: { error: unknown }) {
     <GlassCard className="border-rose-500/30 p-6 text-sm text-rose-600 dark:text-rose-200">
       Could not load data. Make sure the API is running (uvicorn api.main:app --port 8077).
     </GlassCard>
+  );
+}
+
+// Slim model-identity strip — a refined left-accent label that tells the user which
+// model this page/section belongs to, without a heavy filled banner.
+export function ModelStrip({
+  tone = "indigo",
+  label,
+  children,
+}: {
+  tone?: "indigo" | "sky";
+  label: string;
+  children?: ReactNode;
+}) {
+  const accent = tone === "sky" ? "#0ea5e9" : "#6366f1";
+  const text = tone === "sky" ? "text-sky-700 dark:text-sky-300" : "text-indigo-700 dark:text-indigo-300";
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 rounded-lg border-l-[3px] bg-slate-50/60 py-1.5 pl-3 pr-4 dark:bg-white/[0.03]" style={{ borderLeftColor: accent }}>
+      <span className={cn("text-[11px] font-bold uppercase tracking-wide", text)}>{label}</span>
+      {children && <span className="text-xs text-slate-500 dark:text-slate-400">{children}</span>}
+    </div>
   );
 }
 

@@ -8,6 +8,7 @@ import { useControls } from "@/lib/store";
 import { fmtPct, fmtDateTime, statusFromRisk, prettyModel } from "@/lib/format";
 import { GlassCard, StatCard, PageHeader, SectionTitle, LoadingBlock, ErrorBlock, cn } from "@/components/ui";
 import { IconCpu, IconAlert, IconActivity } from "@/components/icons";
+import { RiskHistogram } from "@/components/charts";
 import { TableToolbar, FilterSelect, SortHeader, useTableSort } from "@/components/table";
 import type { FleetItem } from "@/lib/types";
 
@@ -15,7 +16,6 @@ function getVal(it: FleetItem, k: string): number {
   switch (k) {
     case "id": return it.machineID;
     case "risk": return it.classifier_risk;
-    case "score": return it.risk_score;
     case "status": return it.at_risk ? 1 : 0;
     default: return 0;
   }
@@ -67,8 +67,8 @@ export default function MachineHealthPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Machine Health"
-        subtitle={`How likely each machine is to break down within 12 hours — as of ${fmtDateTime(data.as_of)}. Move "Point in time" to any moment.`}
+        title="Classification"
+        subtitle={`12-hour failure probability per machine · as of ${fmtDateTime(data.as_of)} · alert ${threshold.toFixed(2)}`}
       />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -86,8 +86,7 @@ export default function MachineHealthPage() {
       <GlassCard className="p-5">
         <SectionTitle
           title="Fleet health mix"
-          subtitle="How the 100 machines split right now. Most are healthy most of the time — that's expected."
-          info="Healthy = under 10% failure chance · Watch = 10% up to the alert level · At risk = above the alert level."
+          info="Healthy = under 10% failure chance · Watch = 10% to the alert level · At risk = above it."
         />
         <div className="flex h-3 w-full overflow-hidden rounded-full">
           <div style={{ width: `${(healthy / items.length) * 100}%`, background: "#34d399" }} />
@@ -112,8 +111,17 @@ export default function MachineHealthPage() {
         </div>
       </GlassCard>
 
+      <GlassCard className="p-5">
+        <SectionTitle
+          title="Failure-chance distribution"
+          subtitle="How many machines fall in each 12-hour failure-chance band right now."
+          info="Most machines sit near 0% (healthy). The spread shifts toward higher bands near real failure clusters — change the date to watch it move."
+        />
+        <RiskHistogram values={items.map((i) => i.classifier_risk)} />
+      </GlassCard>
+
       <div>
-        <SectionTitle title="Every machine — search, filter and sort" />
+        <SectionTitle title="All machines" />
         <TableToolbar search={search} onSearch={setSearch} count={view.length}>
           <FilterSelect
             value={machine}
@@ -138,11 +146,10 @@ export default function MachineHealthPage() {
 
         <GlassCard className="overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            <thead className="bg-slate-50/70 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:bg-white/[0.03]">
               <tr className="border-b border-slate-200 dark:border-white/10">
                 <SortHeader label="Machine" sortKey="id" active={sortKey === "id"} dir={dir} onSort={toggle} />
                 <SortHeader label="Failure chance (12h)" sortKey="risk" active={sortKey === "risk"} dir={dir} onSort={toggle} />
-                <SortHeader label="Risk score (fail @ 1.0)" sortKey="score" active={sortKey === "score"} dir={dir} onSort={toggle} />
                 <SortHeader label="Status" sortKey="status" active={sortKey === "status"} dir={dir} onSort={toggle} />
                 <th className="px-4 py-3" />
               </tr>
@@ -150,7 +157,7 @@ export default function MachineHealthPage() {
             <tbody>
               {view.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500">No machines match these filters.</td>
+                  <td colSpan={4} className="px-4 py-8 text-center text-sm text-slate-500">No machines match these filters.</td>
                 </tr>
               )}
               {view.map((it) => {
@@ -168,10 +175,6 @@ export default function MachineHealthPage() {
                         </div>
                         <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">{fmtPct(it.classifier_risk)}</span>
                       </div>
-                    </td>
-                    <td className="px-4 py-3 font-medium tabular-nums text-slate-600 dark:text-slate-300">
-                      {it.risk_score.toFixed(2)}
-                      {it.at_end_of_life && <span className="ml-1 text-[10px] font-semibold text-rose-500">EOL</span>}
                     </td>
                     <td className="px-4 py-3">
                       <span className={cn("inline-flex rounded-full border px-2.5 py-0.5 text-xs font-medium", st.badge)}>{st.label}</span>

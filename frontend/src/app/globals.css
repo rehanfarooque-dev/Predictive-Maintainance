@@ -5,6 +5,7 @@
 
 :root {
   color-scheme: light;
+  --ring: 99 102 241;
 }
 .dark {
   color-scheme: dark;
@@ -15,71 +16,112 @@ body {
   height: 100%;
 }
 
-/* Light theme (default) */
 body {
   color: #1e293b;
-  background-color: #eef2f7;
+  background-color: #eaeef5;
   background-image:
-    radial-gradient(1100px 600px at 85% -8%, rgba(99, 102, 241, 0.1), transparent 60%),
-    radial-gradient(900px 520px at -5% 5%, rgba(139, 92, 246, 0.08), transparent 55%);
+    radial-gradient(1200px 640px at 88% -10%, rgba(99, 102, 241, 0.12), transparent 60%),
+    radial-gradient(920px 560px at -6% 4%, rgba(139, 92, 246, 0.09), transparent 55%);
   background-attachment: fixed;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.006em;
 }
 
-/* Dark theme */
 .dark body {
   color: #e2e8f0;
-  background-color: #070b16;
+  background-color: #060912;
   background-image:
-    radial-gradient(1100px 600px at 85% -8%, rgba(99, 102, 241, 0.18), transparent 60%),
-    radial-gradient(900px 520px at -5% 5%, rgba(139, 92, 246, 0.12), transparent 55%),
-    radial-gradient(760px 760px at 50% 118%, rgba(16, 185, 129, 0.07), transparent 60%);
+    radial-gradient(1200px 640px at 88% -10%, rgba(99, 102, 241, 0.2), transparent 60%),
+    radial-gradient(920px 560px at -6% 4%, rgba(139, 92, 246, 0.13), transparent 55%),
+    radial-gradient(780px 780px at 50% 120%, rgba(16, 185, 129, 0.07), transparent 60%);
 }
 
-/* Glass panel surface — adapts to theme */
+/* ── Glass surface ─────────────────────────────────────────────────────────
+   Layered glassmorphism: translucent fill + saturated blur (makes the colour
+   behind the panel bloom), a hairline edge, a soft top highlight, and a diffuse
+   drop shadow for depth. Shadow lives here so every panel reads consistently. */
 .glass {
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: inherit;
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 14px 34px -18px rgba(15, 23, 42, 0.28);
 }
 .dark .glass {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.09);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 18px 40px -20px rgba(0, 0, 0, 0.7);
 }
 
 .glass-hover {
-  transition: border-color 0.2s, background 0.2s, transform 0.2s;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 }
 .glass-hover:hover {
-  background: rgba(15, 23, 42, 0.03);
-  border-color: rgba(15, 23, 42, 0.16);
+  transform: translateY(-1px);
+  border-color: rgba(99, 102, 241, 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 2px 4px rgba(15, 23, 42, 0.05),
+    0 22px 44px -20px rgba(15, 23, 42, 0.32);
 }
 .dark .glass-hover:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(255, 255, 255, 0.16);
+  border-color: rgba(129, 140, 248, 0.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 24px 50px -22px rgba(0, 0, 0, 0.75);
 }
 
+/* ── Scrollbars ─────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.18);
-  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.16);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.28);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 .dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.12);
+  background-clip: padding-box;
+}
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* ── Selection ──────────────────────────────────────────────────────────── */
+::selection {
+  background: rgba(99, 102, 241, 0.22);
+}
+.dark ::selection {
+  background: rgba(129, 140, 248, 0.32);
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────── */
 @keyframes fadeUp {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -87,5 +129,13 @@ body {
   }
 }
 .animate-in {
-  animation: fadeUp 0.35s ease both;
+  animation: fadeUp 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .glass-hover {
+    animation: none;
+    transition: none;
+  }
 }

@@ -56,6 +56,15 @@ export function useComponents() {
   return useQuery({ queryKey: ["components"], queryFn: () => api.components() });
 }
 
+export function useModelReports() {
+  const { asOf, threshold } = useControls();
+  return useQuery({
+    queryKey: ["model-reports", asOf, threshold],
+    queryFn: () => api.modelReports(asOf, threshold),
+    placeholderData: (prev) => prev,
+  });
+}
+
 export function useFeatures() {
   return useQuery({ queryKey: ["features"], queryFn: api.features });
 }

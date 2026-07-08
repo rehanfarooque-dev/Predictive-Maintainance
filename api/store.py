@@ -29,6 +29,8 @@ from src.pdm.survival import (
     rul_to_service_date,
     survival_curve_points,
 )
+from src.pdm.maintenance import comp_weibull_from_dict, maintenance_decision
+from src.pdm.surrogate import surrogate_from_dict, build_surrogate_events, days_since_last_event
 from src.pdm.evaluate import compute_threshold_table, compute_per_component_metrics
 
 COMP_COLS = ["comp1", "comp2", "comp3", "comp4"]
@@ -65,6 +67,14 @@ class ArtifactStore:
         self.aft = bundle["aft"]
         self.km = bundle["km"]
         self.covariate_cols = bundle["covariate_cols"]
+        # Risk-score PdM: per-component Weibull (shape, scale) from true failure gaps.
+        self.comp_weibull = comp_weibull_from_dict(bundle.get("comp_weibull", {}))
+        # Hybrid: surrogate-event Weibull (classifier alarm recurrence) + its validation.
+        self.surrogate = (
+            surrogate_from_dict(bundle["surrogate_weibull"])
+            if bundle.get("surrogate_weibull") else None
+        )
+        self.surrogate_validation = bundle.get("surrogate_validation", {})
         self.rul_df = pd.read_parquet(RUL_PATH)
         self.rul_meta = json.loads(RUL_META_PATH.read_text()) if RUL_META_PATH.exists() else {}
         self.reports = artifacts.load_reports() if not artifacts.check_artifacts().missing_reports else {}
@@ -92,6 +102,11 @@ class ArtifactStore:
         self.age_by_machine = {int(m["machineID"]): int(m["age"]) for m in self.machines_meta}
         self.scored_by_machine = {int(mid): g.sort_values("datetime") for mid, g in self.scored.groupby("machineID")}
         self.feat_by_machine = {int(mid): g for mid, g in self.feat.groupby("machineID")}
+        # Precompute debounced surrogate events per machine (at the model's fitted threshold).
+        self.surrogate_events = (
+            build_surrogate_events(self.scored, self.surrogate.threshold, self.surrogate.cooldown_hours)
+            if self.surrogate else {}
+        )
         self.ready = True
         return self
 
@@ -209,6 +224,40 @@ class ArtifactStore:
         )
         return current_comp, elapsed_days, rul, sched, hazard
 
+    def _surrogate(self, machine_id: int, ts: pd.Timestamp,
+                   prob: float = 0.0, threshold: float = 0.5) -> dict:
+        """Recurrence-risk decision.
+
+        Clock resets at the last classifier-predicted failure before `ts`;
+        H(t) = (days since that alarm / recurrence cycle)^shape estimates when the NEXT
+        pre-failure state is due. BUT if the machine is in a predicted-failure state RIGHT
+        NOW (classifier prob >= threshold), it needs service now regardless of recurrence —
+        being in an alarm IS the trigger. So: due = in_alarm OR H >= 1."""
+        if self.surrogate is None:
+            return {}
+        in_alarm = float(prob) >= float(threshold)
+        since = days_since_last_event(self.surrogate_events.get(machine_id, []), ts)
+        finite = bool(np.isfinite(since))
+        h = round(self.surrogate.hazard(since), 3) if finite else 0.0
+        if in_alarm:
+            # Currently in a predicted-failure state → maximal risk, service now.
+            h_disp, days_until, due = max(h, 1.0), 0.0, True
+        else:
+            h_disp = h
+            days_until = round(max(0.0, self.surrogate.scale - since), 1) if finite else round(self.surrogate.scale, 1)
+            due = bool(h >= 1.0)
+        return {
+            "surrogate_hazard": round(h_disp, 3),
+            "surrogate_cycle_days": round(self.surrogate.scale, 1),
+            "surrogate_shape": round(self.surrogate.shape, 3),
+            "surrogate_days_since_alarm": round(since, 1) if finite else None,
+            "surrogate_days_until_due": days_until,
+            "surrogate_due": due,
+            "surrogate_in_alarm": in_alarm,
+            "surrogate_precision": self.surrogate_validation.get("precision"),
+            "surrogate_recall": self.surrogate_validation.get("recall"),
+        }
+
     def explain(self, x_row: pd.DataFrame, top_k: int = 12) -> List[dict]:
         sv = np.asarray(self.explainer.shap_values(x_row.astype(float)))
         if sv.ndim == 2:
@@ -231,14 +280,16 @@ class ArtifactStore:
             fm = self.feat_by_machine[mid]
             fsub = fm[fm["datetime"] <= ts]
             frow = (fsub if len(fsub) else fm).iloc[-1]
-            current_comp, _elapsed, rul, sched, hazard = self._machine_rul(frow, ts, prob, threshold)
+            current_comp, elapsed_days, rul, sched, _hazard = self._machine_rul(frow, ts, prob, threshold)
+            # Risk-score PdM: failure-gap Weibull maintenance decision for the oldest comp.
+            md = maintenance_decision(self.comp_weibull[current_comp], elapsed_days)
             viol = sensor_violations({s: float(r[s]) for s in SENSOR_COLS}, self.bands[model_name])
-            rs = compute_risk_score(hazard, viol)
+            _rs = compute_risk_score(md.hazard, viol)
             items.append({
                 "machineID": mid, "model": model_name,
                 "classifier_risk": round(prob, 4), "at_risk": bool(prob >= threshold),
-                "risk_score": rs.risk_score,
-                "at_end_of_life": rs.at_end_of_life, "violation_count": rs.violation_count,
+                "risk_score": md.hazard,
+                "at_end_of_life": md.due, "violation_count": _rs.violation_count,
                 "current_comp": current_comp,
                 "rul_days": rul.rul_days,
                 "rul_ci_low_days": rul.rul_ci_low_days,
@@ -247,6 +298,10 @@ class ArtifactStore:
                 "recommended_service_date": _ts(sched["recommended_service_date"]),
                 "days_until_service": sched["days_until_service"],
                 "urgency": sched["urgency"],
+                "pdm_hazard": md.hazard, "pdm_cycle_days": md.cycle_days,
+                "pdm_shape": md.shape, "pdm_due": md.due,
+                "pdm_days_until_due": md.days_until_due, "pdm_pct_of_life": md.pct_of_life,
+                **self._surrogate(mid, ts, prob, threshold),
             })
         if model:
             items = [i for i in items if i["model"] == model]
@@ -264,13 +319,15 @@ class ArtifactStore:
         if machine_id not in self._rul_by_machine.index:
             return None
         ts = self.resolve_as_of(as_of)
-        mdf = self.scored[
-            (self.scored["machineID"] == machine_id) & (self.scored["datetime"] <= ts)
-        ].sort_values("datetime")
+        # Full history for this machine (past AND future relative to as_of) so the
+        # "risk over time" chart can show the entire timeline; the as_of marker line on
+        # the frontend indicates the selected point. The current-state decision below is
+        # still computed strictly at `ts`.
+        mdf = self.scored[self.scored["machineID"] == machine_id].sort_values("datetime")
         meta = next((m for m in self.machines_meta if int(m["machineID"]) == machine_id), {})
 
         cur = mdf[mdf["datetime"] == ts]
-        cur = cur.iloc[0] if len(cur) else mdf.iloc[-1]
+        cur = cur.iloc[0] if len(cur) else mdf[mdf["datetime"] <= ts].iloc[-1]
         prob = float(cur["risk"])
         model_name = str(cur["model"])
 
@@ -280,81 +337,62 @@ class ArtifactStore:
         elapsed_days = hours_since[current_comp] / 24.0
         X = self._covariates(feat_row, current_comp)
         rul = predict_rul(self.aft, X, elapsed_days)
-        hazard = cumulative_hazard(self.aft, X, elapsed_days)
         horizon_days = float(self.cfg.labeling.horizon_hours) / 24.0
         sched = rul_to_service_date(
             ts, rul.rul_days, rul.rul_ci_low_days,
             classifier_prob=prob, threshold=threshold, horizon_days=horizon_days,
         )
 
+        # --- Risk-score PdM decision (the maintenance-cycle model) ---
+        # H(t) = (age / characteristic-life)^shape from the component's failure-gap Weibull.
+        # H >= 1 (age >= characteristic life) => the part has reached its typical lifetime
+        # and should go for maintenance. Age resets on replacement, so H resets to 0.
+        md = maintenance_decision(self.comp_weibull[current_comp], elapsed_days)
+        hazard = md.hazard
+
+        # Hybrid recurrence risk: the maintenance clock resets at the last classifier-
+        # predicted failure (surrogate event) before as_of.
+        sur = self._surrogate(machine_id, ts, prob, threshold)
+
         viol = sensor_violations({s: float(cur[s]) for s in SENSOR_COLS}, self.bands[model_name])
         rs = compute_risk_score(hazard, viol)
 
-        # Downsample to ~1000 points, but always include the last row (the as-of point)
-        # so the chart always ends exactly at the selected timestamp.
+        # Downsample to ~1000 points, but always pin the as-of row and the last row so the
+        # selected timestamp and the end of the timeline are exactly represented.
         stride = max(1, len(mdf) // 1000)
         sampled = mdf.iloc[::stride]
-        last_row = mdf.iloc[[-1]]
-        if sampled.iloc[-1]["datetime"] != last_row.iloc[0]["datetime"]:
-            sampled = pd.concat([sampled, last_row])
-        sub = sampled.reset_index(drop=True)
+        pins = pd.concat([mdf[mdf["datetime"] == ts], mdf.iloc[[-1]]])
+        sampled = pd.concat([sampled, pins])
+        sub = (
+            sampled.drop_duplicates(subset="datetime")
+            .sort_values("datetime")
+            .reset_index(drop=True)
+        )
 
-        # --- risk_score per timeseries row: H(t | X_row) ---
-        # Each row gets its own covariate snapshot (sensor levels, error counts, model, comp)
-        # at that point in time, so the hazard reflects the machine's actual historical state
-        # rather than projecting today's covariates backward. This gives the true sawtooth:
-        # H climbs from 0 after each replacement and reflects real operating conditions.
+        # --- Risk-score PdM per timeseries row: H(t) = (age / lambda_comp) ** rho_comp ---
+        # For each historical row we take the OLDEST component's age at that moment and its
+        # component-specific failure-gap Weibull (shape, scale). This gives the true sawtooth:
+        # H climbs from 0 as a part ages and drops back to 0 the moment it is replaced
+        # (age -> 0), so maintenance automatically resets the risk score.
         fm_m = self.feat_by_machine[machine_id]
         hcols = [f"hours_since_{c}" for c in COMP_COLS]
-        all_cov_cols = [c for c in COVARIATE_FEATURE_COLS + self.model_cols if c in fm_m.columns]
 
         sub_dt = sub[["datetime"]].copy()
         sub_dt["datetime"] = sub_dt["datetime"].astype("datetime64[ns]")
-        merge_right = fm_m[["datetime"] + hcols + all_cov_cols].sort_values("datetime").copy()
+        merge_right = fm_m[["datetime"] + hcols].sort_values("datetime").copy()
         merge_right["datetime"] = merge_right["datetime"].astype("datetime64[ns]")
         feat_ts = pd.merge_asof(
             sub_dt, merge_right, on="datetime", direction="backward",
         ).reset_index(drop=True)
 
-        # Elapsed days = age of the oldest (highest hours_since) component at each row
+        # Elapsed days + which component is oldest at each row
         el_arr = feat_ts[hcols].fillna(8760.0).max(axis=1).values / 24.0
         max_comp_idx = feat_ts[hcols].fillna(8760.0).values.argmax(axis=1)
 
-        # Build per-row covariate matrix aligned to the fitted model's covariate column order
-        n_rows = len(feat_ts)
-        cov_data: dict = {}
-        for col in COVARIATE_FEATURE_COLS:
-            v = feat_ts[col].to_numpy(dtype=float) if col in feat_ts.columns else np.zeros(n_rows)
-            nan_m = np.isnan(v)
-            if nan_m.any():
-                v = np.where(nan_m, float(np.nanmedian(v)) if not nan_m.all() else 0.0, v)
-            cov_data[col] = v
-        for mc in self.model_cols:
-            v = feat_ts[mc].to_numpy(dtype=float) if mc in feat_ts.columns else np.zeros(n_rows)
-            cov_data[mc] = np.nan_to_num(v, nan=0.0)
-        for c in COMP_COLS:
-            cov_data[f"comp_{c}"] = np.zeros(n_rows)
-        for i, ci in enumerate(max_comp_idx):
-            cov_data[f"comp_{COMP_COLS[ci]}"][i] = 1.0
-
-        cov_df_all = pd.DataFrame(cov_data)
-        for c in self.covariate_cols:
-            if c not in cov_df_all.columns:
-                cov_df_all[c] = 0.0
-        cov_df_all = cov_df_all[self.covariate_cols]
-
-        # Vectorised H(t): one predict_cumulative_hazard call over all unique times,
-        # for ALL rows at once (output shape: n_times × n_rows). Then pick H(el_arr[i])
-        # from column i via linear interpolation — no Python loop, no hardcoded formula.
-        uniq_times = np.clip(np.unique(np.round(el_arr, 3)), 0.001, None)
-        ch_df = self.aft.predict_cumulative_hazard(cov_df_all, times=uniq_times)
-        time_idx = ch_df.index.to_numpy(dtype=float)
-        ch_arr = ch_df.to_numpy(dtype=float)  # (n_times, n_rows)
-        ts_rs = np.where(
-            el_arr <= 0.0,
-            0.0,
-            np.array([np.interp(el_arr[i], time_idx, ch_arr[:, i]) for i in range(n_rows)]),
-        )
+        # Per-row shape/scale from the oldest component's fitted failure-gap Weibull
+        shape_arr = np.array([self.comp_weibull[COMP_COLS[ci]].shape for ci in max_comp_idx])
+        scale_arr = np.array([self.comp_weibull[COMP_COLS[ci]].scale for ci in max_comp_idx])
+        ts_rs = np.where(el_arr <= 0.0, 0.0, (el_arr / scale_arr) ** shape_arr)
         ts_rs = np.round(np.clip(ts_rs, 0.0, None), 3)
 
         timeseries = [
@@ -381,9 +419,14 @@ class ArtifactStore:
             "machineID": machine_id, "model": model_name, "age": int(meta.get("age", 0)),
             "as_of": ts.isoformat(),
             "classifier_risk": round(prob, 4), "at_risk": bool(prob >= threshold),
-            "risk_score": rs.risk_score, "violation_count": rs.violation_count,
+            "risk_score": md.hazard, "violation_count": rs.violation_count,
             "violation_severity": rs.violation_severity,
-            "at_end_of_life": rs.at_end_of_life,
+            "at_end_of_life": md.due,
+            # --- Risk-score PdM (maintenance cycle from true failure gaps) ---
+            "pdm_hazard": md.hazard, "pdm_cycle_days": md.cycle_days,
+            "pdm_shape": md.shape, "pdm_due": md.due,
+            "pdm_days_until_due": md.days_until_due, "pdm_pct_of_life": md.pct_of_life,
+            **sur,
             "current_comp": current_comp, "elapsed_days": round(elapsed_days, 1),
             "rul_days": rul.rul_days, "rul_ci_low_days": rul.rul_ci_low_days,
             "rul_ci_high_days": rul.rul_ci_high_days, "is_capped": rul.is_capped,
@@ -431,6 +474,67 @@ class ArtifactStore:
     def features(self) -> dict:
         return {"selected_features": self.selected_features,
                 "best_params": self.reports.get("best_params", {})}
+
+    def model_reports(self, as_of, threshold: float = 0.5) -> dict:
+        """Plain-language summary of BOTH models for the reports page."""
+        summary = self.results_summary()
+        live = self.threshold_sweep(threshold).get("live", {})
+        comp_metrics = self.components(threshold).get("items", [])
+
+        # Fleet snapshot at as_of: how many machines each model is flagging right now.
+        fleet = self.fleet(as_of, threshold).get("items", [])
+        n = len(fleet) or 1
+        n_flagged = sum(1 for m in fleet if m["at_risk"])
+        n_due = sum(1 for m in fleet if m.get("pdm_due"))
+        n_soon = sum(1 for m in fleet if not m.get("pdm_due") and m.get("pdm_days_until_due", 999) < 21)
+
+        # Failure counts per component (true failures) to size the maintenance cycles.
+        fail_counts = self.raw["failures"]["failure"].value_counts().to_dict()
+
+        cycles = []
+        for c in COMP_COLS:
+            cw = self.comp_weibull.get(c)
+            if cw is None:
+                continue
+            cycles.append({
+                "component": c,
+                "cycle_days": round(cw.scale, 1),
+                "shape": round(cw.shape, 3),
+                "n_failures": int(fail_counts.get(c, 0)),
+                "n_lives": cw.n_lives,
+            })
+
+        return {
+            "as_of": self.resolve_as_of(as_of).isoformat(),
+            "n_machines": len(fleet),
+            "classification": {
+                "purpose": "Predicts whether a machine will fail within the next "
+                           f"{summary.get('horizon_hours', 12)} hours, from live sensor patterns.",
+                "model": "XGBoost gradient-boosted trees",
+                "horizon_hours": summary.get("horizon_hours"),
+                "n_features": summary.get("n_features_final"),
+                "auc_pr": summary.get("auc_pr"),
+                "auc_roc": summary.get("auc_roc"),
+                "precision": live.get("precision"),
+                "recall": live.get("recall"),
+                "f1": live.get("f1"),
+                "threshold": threshold,
+                "n_flagged_now": n_flagged,
+                "pct_flagged_now": round(100.0 * n_flagged / n, 1),
+                "per_component": comp_metrics,
+            },
+            "pdm": {
+                "purpose": "Tells you when each machine is due for maintenance, based on how long "
+                           "its oldest part has run versus that part's typical lifespan.",
+                "model": "Weibull reliability model fitted on real failure-to-failure gaps",
+                "rule": "Maintenance is due when cumulative hazard H(t) reaches 1.0 "
+                        "(the part has reached its characteristic life).",
+                "cycles": cycles,
+                "n_due_now": n_due,
+                "n_soon": n_soon,
+                "pct_due_now": round(100.0 * n_due / n, 1),
+            },
+        }
 
     def plot_path(self, name: str) -> Optional[Path]:
         return self.reports.get("plots", {}).get(f"{name}.png")

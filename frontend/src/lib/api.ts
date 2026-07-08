@@ -6,6 +6,7 @@ import type {
   InferenceResult,
   MachineDetail,
   MetricsSummary,
+  ModelReports,
   MonitorResponse,
   ThresholdSweep,
   TimestampsResponse,
@@ -55,6 +56,8 @@ export const api = {
   components: (threshold = 0.5) =>
     get<{ items: ComponentRow[] }>(`/results/components${qs({ threshold })}`),
   features: () => get<{ selected_features: string[]; best_params: Record<string, number> }>("/results/features"),
+  modelReports: (asOf: string | undefined, threshold: number) =>
+    get<ModelReports>(`/results/model-reports${qs({ as_of: asOf, threshold })}`),
   inferenceLookup: (machineId: number, asOf: string | undefined, threshold: number) =>
     get<InferenceResult>(`/inference/lookup${qs({ machine_id: machineId, as_of: asOf, threshold })}`),
   plotUrl: (name: string) => `${BASE}/results/plots/${name}`,

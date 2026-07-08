@@ -8,10 +8,7 @@ import { useHealth } from "@/lib/queries";
 import { cn } from "@/components/ui";
 import {
   IconActivity,
-  IconHome,
   IconTrendingDown,
-  IconChart,
-  IconSearch,
   IconChevronsLeft,
   IconChevronsRight,
   IconMoon,
@@ -34,21 +31,8 @@ type NavGroup = {
 const GROUPS: NavGroup[] = [
   {
     items: [
-      { href: "/",              label: "Live Status",     sub: "Fleet health at a glance",    icon: IconHome,          exact: true },
-    ],
-  },
-  {
-    heading: "Monitoring",
-    items: [
-      { href: "/classification", label: "Machine Health",  sub: "Per-machine failure risk",    icon: IconActivity },
-      { href: "/inference",      label: "Fleet Monitor",   sub: "Live sensor benchmarks",      icon: IconSearch },
-    ],
-  },
-  {
-    heading: "Planning",
-    items: [
-      { href: "/risk",     label: "Service Planner", sub: "Maintenance scheduling",       icon: IconTrendingDown },
-      { href: "/metrics",  label: "Accuracy",        sub: "Model performance & trust",    icon: IconChart },
+      { href: "/classification", label: "Classification", sub: "12-hour failure forecast",  icon: IconActivity },
+      { href: "/risk",           label: "Risk Score",     sub: "Maintenance cycle (PdM)",   icon: IconTrendingDown },
     ],
   },
 ];

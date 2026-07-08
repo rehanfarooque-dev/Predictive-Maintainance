@@ -12,7 +12,30 @@ export interface Health {
   study_end: string | null;
 }
 
-export interface FleetItem {
+// Risk-score PdM (maintenance cycle from true failure gaps). Present on FleetItem + MachineDetail.
+export interface PdmFields {
+  pdm_hazard: number;        // H(t) = (age / cycle)^shape — the risk score
+  pdm_cycle_days: number;    // characteristic life lambda (H = 1 here)
+  pdm_shape: number;         // Weibull shape rho
+  pdm_due: boolean;          // H >= 1 => maintenance due now
+  pdm_days_until_due: number;
+  pdm_pct_of_life: number;   // age / cycle (0..>1)
+}
+
+// Hybrid recurrence risk — Weibull fitted on classifier surrogate events (MachineDetail only).
+export interface SurrogateFields {
+  surrogate_hazard?: number;         // H(t) since the last classifier alarm
+  surrogate_cycle_days?: number;     // typical days between alarm states
+  surrogate_shape?: number;
+  surrogate_days_since_alarm?: number | null;
+  surrogate_days_until_due?: number; // days until H reaches 1.0
+  surrogate_due?: boolean;
+  surrogate_in_alarm?: boolean;      // classifier is flagging failure right now
+  surrogate_precision?: number;      // validation: alarms followed by a real failure
+  surrogate_recall?: number;         // validation: failures preceded by an alarm
+}
+
+export interface FleetItem extends PdmFields, SurrogateFields {
   machineID: number;
   model: string;
   classifier_risk: number;
@@ -77,7 +100,7 @@ export interface TimeseriesPoint {
   vibration: number;
 }
 
-export interface MachineDetail {
+export interface MachineDetail extends PdmFields, SurrogateFields {
   machineID: number;
   model: string;
   age: number;
@@ -146,6 +169,35 @@ export interface MonitorItem {
   overdue_comp: string;
   overdue_days: number;
   risk: number;
+}
+
+export interface ModelReports {
+  as_of: string;
+  n_machines: number;
+  classification: {
+    purpose: string;
+    model: string;
+    horizon_hours: number;
+    n_features: number;
+    auc_pr: number;
+    auc_roc: number;
+    precision: number;
+    recall: number;
+    f1: number;
+    threshold: number;
+    n_flagged_now: number;
+    pct_flagged_now: number;
+    per_component: ComponentRow[];
+  };
+  pdm: {
+    purpose: string;
+    model: string;
+    rule: string;
+    cycles: { component: string; cycle_days: number; shape: number; n_failures: number; n_lives: number }[];
+    n_due_now: number;
+    n_soon: number;
+    pct_due_now: number;
+  };
 }
 
 export interface MonitorResponse {

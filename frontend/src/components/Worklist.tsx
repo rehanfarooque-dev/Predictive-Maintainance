@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { FleetItem, Urgency } from "@/lib/types";
-import { URGENCY_META, rulLabel, fmtDate, riskScoreColor, prettyModel, prettyComp } from "@/lib/format";
+import { URGENCY_META, riskScoreColor, prettyModel, prettyComp, pdmServiceDate, recurrenceUrgency, recurrenceTimeLeft } from "@/lib/format";
 import { GlassCard, cn } from "@/components/ui";
 import { TableToolbar, FilterSelect, SortHeader, useTableSort } from "@/components/table";
 
@@ -13,10 +13,10 @@ const URGENCIES: Urgency[] = ["overdue", "urgent", "soon", "planned"];
 function getVal(it: FleetItem, k: string): number | string {
   switch (k) {
     case "id":      return it.machineID;
-    case "urgency": return URGENCY_META[it.urgency].rank;
-    case "rul":     return it.rul_days;
-    case "service": return it.days_until_service;
-    case "risk":    return it.risk_score;
+    case "urgency": return URGENCY_META[recurrenceUrgency(it)].rank;
+    case "rul":     return it.surrogate_days_until_due ?? 0;
+    case "service": return it.surrogate_days_until_due ?? 0;
+    case "risk":    return it.surrogate_hazard ?? 0;
     default:        return 0;
   }
 }
@@ -27,9 +27,11 @@ interface WorklistProps {
   /** Controlled urgency from parent (stat cards). "all" = no urgency filter. */
   urgencyFilter?: Urgency | "all";
   onUrgencyChange?: (u: Urgency | "all") => void;
+  /** Resolved as-of timestamp — anchors the projected service date. */
+  asOf?: string;
 }
 
-export function Worklist({ items, filterable = false, urgencyFilter = "all", onUrgencyChange }: WorklistProps) {
+export function Worklist({ items, filterable = false, urgencyFilter = "all", onUrgencyChange, asOf }: WorklistProps) {
   const router = useRouter();
   const [search,  setSearch]  = useState("");
   const [machine, setMachine] = useState("all");
@@ -45,7 +47,7 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
   // ── Bidirectional filter sync ───────────────────────────────────────────
   // Base rows after urgency filter (shared starting point)
   const urgencyFiltered = useMemo(
-    () => urgencyFilter === "all" ? items : items.filter((i) => i.urgency === urgencyFilter),
+    () => urgencyFilter === "all" ? items : items.filter((i) => recurrenceUrgency(i) === urgencyFilter),
     [items, urgencyFilter],
   );
 
@@ -130,10 +132,10 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
             <thead className="sticky top-0 bg-white/95 backdrop-blur dark:bg-slate-950/95">
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-white/10">
                 <SortHeader label="Machine"        sortKey="id"      active={sortKey === "id"}      dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" />
-                <SortHeader label="Recommendation" sortKey="urgency" active={sortKey === "urgency"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" />
-                <SortHeader label="Time left"      sortKey="rul"     active={sortKey === "rul"}     dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Estimated days before this machine is expected to fail, based on wear model." />
-                <SortHeader label="Service by"     sortKey="service" active={sortKey === "service"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Recommended service date — 3 days before the estimated failure window." />
-                <SortHeader label="Risk score"     sortKey="risk"    active={sortKey === "risk"}    dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="0–100 composite: 50% failure probability + 20% sensor anomaly + 30% part wear." />
+                <SortHeader label="Recommendation" sortKey="urgency" active={sortKey === "urgency"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Recurrence risk: due when H(t) since the last predicted failure reaches 1.0." />
+                <SortHeader label="Time to service" sortKey="rul"    active={sortKey === "rul"}     dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Days until the alarm-recurrence risk reaches H = 1.0." />
+                <SortHeader label="Service by"     sortKey="service" active={sortKey === "service"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Projected date the recurrence risk reaches 1.0." />
+                <SortHeader label="Risk score H(t)" sortKey="risk"   active={sortKey === "risk"}    dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Recurrence cumulative hazard since the last classifier-predicted failure. 1.0 = service due." />
               </tr>
             </thead>
             <tbody>
@@ -145,7 +147,9 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
                 </tr>
               )}
               {view.map((it) => {
-                const u = URGENCY_META[it.urgency];
+                const urg = recurrenceUrgency(it);
+                const u = URGENCY_META[urg];
+                const h = it.surrogate_hazard ?? 0;
                 return (
                   <tr
                     key={it.machineID}
@@ -184,43 +188,43 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
                         <span className={cn(
                           "h-1.5 w-1.5 rounded-full",
                           u.dot,
-                          it.urgency === "overdue" && "animate-pulse",
+                          urg === "overdue" && "animate-pulse",
                         )} />
                         {u.label}
                       </span>
                     </td>
 
-                    {/* Time left */}
+                    {/* Time to service (cycle-based) */}
                     <td className="px-4 py-3.5">
                       <span className={cn(
                         "font-semibold tabular-nums",
-                        it.urgency === "overdue" ? "text-rose-600 dark:text-rose-400"
-                          : it.urgency === "urgent" ? "text-amber-600 dark:text-amber-400"
+                        urg === "overdue" ? "text-rose-600 dark:text-rose-400"
+                          : urg === "urgent" ? "text-amber-600 dark:text-amber-400"
                           : "text-slate-600 dark:text-slate-300",
                       )}>
-                        {rulLabel(it.rul_days, it.is_capped)}
+                        {recurrenceTimeLeft(it)}
                       </span>
                     </td>
 
-                    {/* Service by date */}
+                    {/* Service by date (projected from the recurrence cycle) */}
                     <td className="px-4 py-3.5 tabular-nums text-slate-500 dark:text-slate-400">
-                      {fmtDate(it.recommended_service_date)}
+                      {pdmServiceDate(asOf, it.surrogate_days_until_due ?? 0)}
                     </td>
 
-                    {/* Risk score — bar + number */}
+                    {/* Recurrence risk H(t) — bar toward 1.0 + number */}
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-3">
                         <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">
                           <div
                             className="h-full rounded-full transition-all"
                             style={{
-                              width: `${Math.min(it.risk_score, 1) * 100}%`,
-                              background: riskScoreColor(Math.min(it.risk_score, 1) * 100),
+                              width: `${Math.min(h, 1) * 100}%`,
+                              background: riskScoreColor(Math.min(h, 1) * 100),
                             }}
                           />
                         </div>
                         <span className="w-9 shrink-0 text-right text-xs font-bold tabular-nums text-slate-600 dark:text-slate-300">
-                          {it.risk_score.toFixed(2)}
+                          {h.toFixed(2)}
                         </span>
                       </div>
                     </td>

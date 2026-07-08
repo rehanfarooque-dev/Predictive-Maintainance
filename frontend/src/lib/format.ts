@@ -46,8 +46,65 @@ export function rulLabel(days: number, capped = false): string {
   return `~${Math.round(days)} days`;
 }
 
+/**
+ * Maintenance urgency from the Risk-Score PdM cycle ONLY (never the 12h classifier).
+ * Driven purely by cumulative hazard H(t): due when H ≥ 1, else by days-to-cycle.
+ * This keeps the Service Planner internally consistent — H, time-left and urgency
+ * always tell the same story.
+ */
+export function pdmUrgency(it: { pdm_due?: boolean; pdm_days_until_due?: number }): Urgency {
+  const days = it.pdm_days_until_due ?? 999;
+  if (it.pdm_due || days <= 0) return "overdue";
+  if (days < 7) return "urgent";
+  if (days < 30) return "soon";
+  return "planned";
+}
+
+/** Plain "time until maintenance" label for the PdM cycle. */
+export function pdmTimeLeft(it: { pdm_due?: boolean; pdm_days_until_due?: number }): string {
+  const days = it.pdm_days_until_due ?? 0;
+  if (it.pdm_due || days <= 0) return "Due now";
+  if (days < 1) return "<1 day";
+  return `~${Math.round(days)} days`;
+}
+
+/** Projected maintenance-due date from the PdM cycle: as_of + days-to-cycle. */
+export function pdmServiceDate(asOf: string | undefined, daysUntil: number): string {
+  const base = asOf ? new Date(asOf) : new Date();
+  base.setTime(base.getTime() + Math.max(0, daysUntil) * 86_400_000);
+  return fmtDate(base.toISOString());
+}
+
+/**
+ * Recurrence urgency — the HYBRID model. The maintenance clock resets at the last
+ * classifier-predicted failure; H(t) grows on the alarm-recurrence cycle. Due when H ≥ 1.
+ */
+export function recurrenceUrgency(it: { surrogate_due?: boolean; surrogate_days_until_due?: number }): Urgency {
+  const days = it.surrogate_days_until_due ?? 999;
+  if (it.surrogate_due || days <= 0) return "overdue";
+  if (days < 7) return "urgent";
+  if (days < 30) return "soon";
+  return "planned";
+}
+
+export function recurrenceTimeLeft(it: { surrogate_due?: boolean; surrogate_days_until_due?: number }): string {
+  if (it.surrogate_due) return "Due now";
+  const d = it.surrogate_days_until_due ?? 0;
+  if (d < 1) return "<1 day";
+  return `~${Math.round(d)} days`;
+}
+
 export function fmtPct(x: number, digits = 1): string {
   return `${(x * 100).toFixed(digits)}%`;
+}
+
+// Adaptive probability formatter — never collapses a real, tiny probability to "0.0%".
+export function fmtProb(x: number): string {
+  const pct = x * 100;
+  if (pct >= 1) return `${pct.toFixed(1)}%`;
+  if (pct >= 0.01) return `${pct.toFixed(2)}%`;
+  if (pct > 0) return "<0.01%";
+  return "0%";
 }
 
 export function fmtDate(iso: string): string {
@@ -59,7 +116,7 @@ export function fmtDate(iso: string): string {
 export function fmtDateTime(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export function riskScoreColor(score: number): string {

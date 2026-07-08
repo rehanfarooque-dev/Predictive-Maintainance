@@ -3,8 +3,10 @@
 import { useState } from "react";
 
 import { useFleet } from "@/lib/queries";
-import { URGENCY_META } from "@/lib/format";
-import { StatCard, PageHeader, LoadingBlock, ErrorBlock, cn } from "@/components/ui";
+import { URGENCY_META, recurrenceUrgency, fmtDate } from "@/lib/format";
+import { StatCard, PageHeader, SectionTitle, GlassCard, LoadingBlock, ErrorBlock, cn } from "@/components/ui";
+import { UrgencyDonut } from "@/components/charts";
+import { FleetMap } from "@/components/FleetMap";
 import { Worklist } from "@/components/Worklist";
 import { IconAlert, IconClock, IconWrench, IconShield } from "@/components/icons";
 import type { Urgency } from "@/lib/types";
@@ -18,10 +20,10 @@ export default function RiskPage() {
   if (!data) return null;
 
   const items   = data.items;
-  const overdue = items.filter((i) => i.urgency === "overdue").length;
-  const urgent  = items.filter((i) => i.urgency === "urgent").length;
-  const soon    = items.filter((i) => i.urgency === "soon").length;
-  const planned = items.filter((i) => i.urgency === "planned").length;
+  const overdue = items.filter((i) => recurrenceUrgency(i) === "overdue").length;
+  const urgent  = items.filter((i) => recurrenceUrgency(i) === "urgent").length;
+  const soon    = items.filter((i) => recurrenceUrgency(i) === "soon").length;
+  const planned = items.filter((i) => recurrenceUrgency(i) === "planned").length;
 
   function toggle(u: Urgency) {
     setUrgencyFilter((prev) => (prev === u ? "all" : u));
@@ -29,13 +31,19 @@ export default function RiskPage() {
 
   const filteredCount = urgencyFilter === "all"
     ? items.length
-    : items.filter((i) => i.urgency === urgencyFilter).length;
+    : items.filter((i) => recurrenceUrgency(i) === urgencyFilter).length;
+
+  const donutCounts = (["overdue", "urgent", "soon", "planned"] as const).map((k) => ({
+    name: URGENCY_META[k].label,
+    value: items.filter((i) => recurrenceUrgency(i) === k).length,
+    color: URGENCY_META[k].color,
+  }));
 
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Service Planner"
-        subtitle="When each machine should be serviced before it breaks down — soonest first. Click a card to filter by urgency level."
+        title="Risk Score"
+        subtitle={`Hybrid recurrence risk — the clock resets at each machine's last predicted failure and climbs until the next is due. · as of ${fmtDate(data.as_of)}`}
       />
 
       {/* Urgency KPI cards — all clickable filters */}
@@ -89,10 +97,10 @@ export default function RiskPage() {
           <span>
             Showing <strong>{filteredCount}</strong>{" "}
             <strong>{URGENCY_META[urgencyFilter].label.toLowerCase()}</strong> machine{filteredCount !== 1 ? "s" : ""} —{" "}
-            {urgencyFilter === "overdue" && "failure risk is high right now, service immediately"}
-            {urgencyFilter === "urgent"  && "service needed within the next 7 days"}
-            {urgencyFilter === "soon"    && "service needed within the next 30 days"}
-            {urgencyFilter === "planned" && "healthy machines, service scheduled in advance"}
+            {urgencyFilter === "overdue" && "recurrence risk has reached 1.0 — service now"}
+            {urgencyFilter === "urgent"  && "recurrence risk reaches 1.0 within 7 days"}
+            {urgencyFilter === "soon"    && "recurrence risk reaches 1.0 within 30 days"}
+            {urgencyFilter === "planned" && "well before the next predicted failure state"}
           </span>
           <button
             type="button"
@@ -104,8 +112,32 @@ export default function RiskPage() {
         </div>
       )}
 
+      {/* Dashboard visuals — maintenance urgency split + fleet map */}
+      <div className="grid gap-5 lg:grid-cols-5">
+        <GlassCard className="p-5 lg:col-span-2">
+          <SectionTitle title="Maintenance urgency" subtitle="Fleet split by how soon the recurrence risk reaches 1.0." />
+          <UrgencyDonut counts={donutCounts} />
+          <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            {donutCounts.map((c) => (
+              <div key={c.name} className="flex items-center justify-between rounded-lg bg-slate-100 px-3 py-1.5 dark:bg-white/5">
+                <span className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                  <span className="h-2.5 w-2.5 rounded-sm" style={{ background: c.color }} /> {c.name}
+                </span>
+                <span className="font-semibold text-slate-900 dark:text-white">{c.value}</span>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+
+        <GlassCard className="p-5 lg:col-span-3">
+          <SectionTitle title="Fleet map" subtitle="Every machine by maintenance urgency — click a tile to open its plan." />
+          <FleetMap items={items} />
+        </GlassCard>
+      </div>
+
       {/* Worklist — receives urgency filter from the cards above */}
-      <Worklist items={items} filterable urgencyFilter={urgencyFilter} onUrgencyChange={setUrgencyFilter} />
+      <SectionTitle title="Maintenance worklist" subtitle="Soonest to service first — sort or filter any column." />
+      <Worklist items={items} filterable urgencyFilter={urgencyFilter} onUrgencyChange={setUrgencyFilter} asOf={data.as_of} />
     </div>
   );
 }

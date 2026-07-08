@@ -31,6 +31,13 @@ def features(store: ArtifactStore = Depends(require_ready)):
     return store.features()
 
 
+@router.get("/model-reports")
+def model_reports(as_of: Optional[str] = None, threshold: float = 0.5,
+                  store: ArtifactStore = Depends(require_ready)):
+    """Plain-language report for both models: the 12h classifier and the PdM cycle."""
+    return store.model_reports(as_of, threshold)
+
+
 @router.get("/plots/{name}")
 def plot(name: str, store: ArtifactStore = Depends(require_ready)):
     if name not in PLOT_NAMES:

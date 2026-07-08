@@ -41,6 +41,16 @@ from src.pdm.survival import (
     predict_rul,
     rul_to_service_date,
 )
+from src.pdm.maintenance import (
+    comp_weibull_to_dict,
+    fit_component_weibull,
+    maintenance_decision,
+)
+from src.pdm.surrogate import (
+    fit_surrogate_weibull,
+    surrogate_to_dict,
+    validate_surrogate,
+)
 
 COMP_COLS = ["comp1", "comp2", "comp3", "comp4"]
 
@@ -83,8 +93,31 @@ def main(config_path: str) -> None:
     survival_df, covariate_cols = attach_life_covariates(lives, feature_df)
     aft, used_cols = fit_weibull_aft(survival_df, covariate_cols)
     km = fit_kaplan_meier(survival_df, by="comp")
+
+    # --- 2b. Risk-score PdM: per-component Weibull from TRUE failure gaps ---
+    # Step 1: true failures only. Step 2: failure-to-failure gap = component lifetime.
+    # Step 3: fit Weibull (shape, scale) per component. Maintenance decision = H >= 1.
+    print("Fitting per-component maintenance-cycle Weibull (censored renewal lives)...")
+    comp_weibull = fit_component_weibull(lives)
+    for c, cw in comp_weibull.items():
+        print(f"    {c}: shape={cw.shape:.3f}  cycle(lambda)={cw.scale:.1f}d  "
+              f"(n={cw.n_lives} lives, censored included)")
+
+    # --- 2c. Hybrid surrogate-event Weibull (classifier-flagged pre-failure states) ---
+    print("Fitting surrogate-event Weibull (classifier alarm recurrence)...")
+    surrogate = fit_surrogate_weibull(scored, study_end, threshold=0.5, cooldown_hours=24)
+    surrogate_val = validate_surrogate(scored, raw["failures"], threshold=0.5,
+                                       cooldown_hours=24, window_days=30.0)
+    print(f"    shape={surrogate.shape:.3f}  cycle(lambda)={surrogate.scale:.1f}d  "
+          f"events={surrogate.n_events} censored={surrogate.n_censored}")
+    print(f"    validation vs real failures: precision={surrogate_val['precision']} "
+          f"recall={surrogate_val['recall']} median_lead={surrogate_val['median_lead_hours']}h")
+
     joblib.dump(
-        {"aft": aft, "km": km, "covariate_cols": used_cols, "study_end": study_end},
+        {"aft": aft, "km": km, "covariate_cols": used_cols, "study_end": study_end,
+         "comp_weibull": comp_weibull_to_dict(comp_weibull),
+         "surrogate_weibull": surrogate_to_dict(surrogate),
+         "surrogate_validation": surrogate_val},
         models_dir / "survival.joblib",
     )
     n_events = int(survival_df["event_observed"].sum())
@@ -129,6 +162,10 @@ def main(config_path: str) -> None:
         viol = sensor_violations(values, bands[model_name])
         risk = compute_risk_score(hazard, viol)
 
+        # Risk-score PdM decision: failure-gap Weibull for the oldest component.
+        # H >= 1 (age >= characteristic life) => maintenance due now.
+        md = maintenance_decision(comp_weibull[current_comp], elapsed_days)
+
         rows.append({
             "machineID": mid,
             "model": model_name,
@@ -148,6 +185,13 @@ def main(config_path: str) -> None:
             "days_until_service": sched["days_until_service"],
             "urgency": sched["urgency"],
             "top_violating_sensors": json.dumps(risk.top_sensors),
+            # --- Risk-score PdM (maintenance cycle) fields ---
+            "pdm_hazard": md.hazard,
+            "pdm_cycle_days": md.cycle_days,
+            "pdm_shape": md.shape,
+            "pdm_due": md.due,
+            "pdm_days_until_due": md.days_until_due,
+            "pdm_pct_of_life": md.pct_of_life,
         })
 
     rul_df = pd.DataFrame(rows)

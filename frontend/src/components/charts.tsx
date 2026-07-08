@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -61,27 +61,19 @@ function useChartTheme() {
 }
 
 
-const RISK_WINDOWS = [
-  { label: "24h",  hours: 24 },
-  { label: "3d",   hours: 72 },
-  { label: "7d",   hours: 168 },
-  { label: "30d",  hours: 720 },
-  { label: "All",  hours: null },
-] as const;
-
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+// Axis tick label — always includes the year ("full date"). Adds time only for short spans.
 function fmtTs(ms: number, spanHours: number): string {
   const d = new Date(ms);
-  if (spanHours <= 48)
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
-  if (spanHours <= 336)
+  const date = d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  if (spanHours <= 72)
     return (
       d.toLocaleDateString(undefined, { day: "numeric", month: "short" }) +
       " " +
       d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
     );
-  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return date;
 }
 
 function fmtTsLong(ms: number): string {
@@ -97,7 +89,6 @@ function fmtTsLong(ms: number): string {
 
 export function RiskOverTimeChart({ data, asOf }: { data: TimeseriesPoint[]; asOf?: string }) {
   const ct = useChartTheme();
-  const [windowHours, setWindowHours] = useState<number | null>(168);
 
   // Convert ISO strings → numeric ms once so everything downstream is numeric.
   // Recharts XAxis with type="number" + scale="time" gives proper proportional spacing.
@@ -108,49 +99,31 @@ export function RiskOverTimeChart({ data, asOf }: { data: TimeseriesPoint[]; asO
 
   const asOfMs = useMemo(() => (asOf ? new Date(asOf).getTime() : null), [asOf]);
 
-  // Window anchors to the selected as_of point so "7d" = last 7 days before selection.
-  const anchorMs = asOfMs ?? (allPoints.length > 0 ? allPoints[allPoints.length - 1].ts : 0);
-
+  // Show ONLY from the selected date onward (the future) — we're standing on `as_of`
+  // and want to see what happens after it, not the history before it.
   const visible = useMemo(() => {
-    if (!windowHours || allPoints.length === 0) return allPoints;
-    const cutoff = anchorMs - windowHours * 3_600_000;
-    return allPoints.filter((p) => p.ts >= cutoff);
-  }, [allPoints, windowHours, anchorMs]);
+    if (!asOfMs || allPoints.length === 0) return allPoints;
+    const fromNow = allPoints.filter((p) => p.ts >= asOfMs);
+    return fromNow.length > 1 ? fromNow : allPoints;
+  }, [allPoints, asOfMs]);
 
   const spanHours = useMemo(() => {
-    if (visible.length < 2) return windowHours ?? 8760;
+    if (visible.length < 2) return 8760;
     return (visible[visible.length - 1].ts - visible[0].ts) / 3_600_000;
-  }, [visible, windowHours]);
+  }, [visible]);
 
   const domainMin = visible.length > 0 ? visible[0].ts : 0;
   const domainMax = visible.length > 0 ? visible[visible.length - 1].ts : 1;
 
-  const asOfLabel = asOfMs ? fmtTs(asOfMs, 0) : ""; // always date+time for the marker label
+  const asOfLabel = asOfMs ? fmtTsLong(asOfMs) : "";
 
   return (
     <div>
-      {/* ── window selector ── */}
-      <div className="mb-3 flex flex-wrap items-center gap-1">
-        <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">Window</span>
-        {RISK_WINDOWS.map((w) => (
-          <button
-            key={w.label}
-            onClick={() => setWindowHours(w.hours)}
-            className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
-              windowHours === w.hours
-                ? "bg-indigo-500 text-white"
-                : "bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-white/10 dark:text-slate-400 dark:hover:bg-white/20"
-            }`}
-          >
-            {w.label}
-          </button>
-        ))}
-        {asOfMs && (
-          <span className="ml-auto text-[10px] font-medium text-indigo-500 dark:text-indigo-400">
-            ▌ selected: {fmtTsLong(asOfMs)}
-          </span>
-        )}
-      </div>
+      {asOfMs && (
+        <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
+          From {asOfLabel} onward → {fmtTsLong(domainMax)}
+        </div>
+      )}
 
       <ResponsiveContainer width="100%" height={240}>
         <AreaChart data={visible} margin={{ top: 18, right: 16, bottom: 4, left: -8 }}>
@@ -193,33 +166,22 @@ export function RiskOverTimeChart({ data, asOf }: { data: TimeseriesPoint[]; asO
             }
           />
 
-          {/* Shade everything after the selected timestamp (future data) */}
-          {asOfMs && domainMax > asOfMs && (
-            <ReferenceArea
-              x1={asOfMs}
-              x2={domainMax}
-              fill="#818cf8"
-              fillOpacity={0.07}
-            />
-          )}
-
           {/* Failure threshold line */}
           <ReferenceLine
             y={1.0}
             stroke="#f43f5e"
             strokeDasharray="5 4"
-            label={{ value: "failure (1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
+            label={{ value: "maintenance (H = 1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
           />
 
-          {/* "You are here" vertical line */}
+          {/* Start marker at the selected date (left edge of the future window) */}
           {asOfMs && (
             <ReferenceLine
               x={asOfMs}
               stroke="#6366f1"
               strokeWidth={2}
-              strokeDasharray="4 3"
               label={{
-                value: `◀ ${asOfLabel}`,
+                value: `${asOfLabel} ▶`,
                 position: "insideTopLeft",
                 fontSize: 10,
                 fontWeight: 700,
@@ -239,6 +201,257 @@ export function RiskOverTimeChart({ data, asOf }: { data: TimeseriesPoint[]; asO
           />
         </AreaChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ─── MaintenanceProjectionChart ─────────────────────────────────────────────
+// Forecasts degradation from the selected date. It does NOT use actual replacements
+// and does NOT reset — with no maintenance assumed, H(t) = (age/cycle)^shape grows
+// MONOTONICALLY as the part keeps ageing. The point where it crosses 1.0 is the
+// predicted maintenance-due date; the curve continues rising past it to show that,
+// left unserviced, the part degrades further.
+export function MaintenanceProjectionChart({
+  asOf,
+  elapsedDays,
+  cycleDays,
+  shape,
+}: {
+  asOf?: string;
+  elapsedDays: number;
+  cycleDays: number;
+  shape: number;
+}) {
+  const ct = useChartTheme();
+
+  const { pts, startMs, dueMs, maxH } = useMemo(() => {
+    const DAY = 86_400_000;
+    const start = asOf ? new Date(asOf).getTime() : 0;
+    const cycle = cycleDays > 0 ? cycleDays : 1;
+    const s = shape > 0 ? shape : 1;
+
+    // Project until H ≈ 2.2 (well past the maintenance line) so the crossing is clear.
+    const targetMaxH = 2.2;
+    const ageAtMax = cycle * Math.pow(targetMaxH, 1 / s);
+    const totalDays = Math.max(ageAtMax - elapsedDays, cycle * 0.75);
+
+    const step = Math.max(totalDays / 120, 0.5);
+    const pts: { ts: number; h: number }[] = [];
+    let maxH = 0;
+    for (let t = 0; t <= totalDays + 1e-6; t += step) {
+      const age = elapsedDays + t; // monotonic — no reset
+      const h = Math.pow(age / cycle, s);
+      maxH = Math.max(maxH, h);
+      pts.push({ ts: start + t * DAY, h });
+    }
+
+    // Maintenance-due date = where H crosses 1.0 (age == cycle).
+    const dueDays = cycle - elapsedDays;
+    const dueMs = start + Math.max(dueDays, 0) * DAY;
+
+    return { pts, startMs: start, dueMs, maxH };
+  }, [asOf, elapsedDays, cycleDays, shape]);
+
+  const domainMax = pts.length ? pts[pts.length - 1].ts : startMs + 1;
+  const overdue = elapsedDays >= cycleDays;
+  const yTop = Math.max(1.2, Math.ceil(maxH * 10) / 10);
+
+  return (
+    <div>
+      <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
+        Forecast from {fmtTsLong(startMs)} ·{" "}
+        {overdue ? (
+          <span className="font-semibold text-rose-500">maintenance already due (overdue)</span>
+        ) : (
+          <>maintenance due at H = 1.0 → <span className="font-semibold">{fmtTsLong(dueMs)}</span></>
+        )}
+      </div>
+
+      <ResponsiveContainer width="100%" height={240}>
+        <AreaChart data={pts} margin={{ top: 18, right: 16, bottom: 4, left: -8 }}>
+          <defs>
+            <linearGradient id="projGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.55} />
+              <stop offset="60%" stopColor="#fb923c" stopOpacity={0.22} />
+              <stop offset="100%" stopColor="#fb923c" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke={ct.grid} vertical={false} />
+          <XAxis
+            dataKey="ts"
+            type="number"
+            scale="time"
+            domain={[startMs, domainMax]}
+            tickFormatter={(v) => fmtTs(Number(v), 8760)}
+            tick={ct.tick}
+            minTickGap={64}
+            stroke={ct.axisLine}
+          />
+          <YAxis
+            domain={[0, yTop]}
+            tickFormatter={(v) => Number(v).toFixed(1)}
+            tick={ct.tick}
+            stroke={ct.axisLine}
+          />
+          <Tooltip
+            {...ct.tt}
+            labelFormatter={(v) => fmtTsLong(Number(v))}
+            formatter={(v) => [Number(v).toFixed(2), "projected H(t)"]}
+          />
+          {/* Maintenance threshold */}
+          <ReferenceLine
+            y={1.0}
+            stroke="#f43f5e"
+            strokeDasharray="5 4"
+            label={{ value: "maintenance (H = 1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
+          />
+          {/* Maintenance-due date — where the rising curve crosses 1.0 */}
+          {!overdue && (
+            <ReferenceLine
+              x={dueMs}
+              stroke="#f43f5e"
+              strokeWidth={1.6}
+              strokeDasharray="3 3"
+              label={{ value: `▲ due ${fmtTs(dueMs, 8760)}`, position: "top", fontSize: 10, fontWeight: 700, fill: "#f43f5e" }}
+            />
+          )}
+          <Area type="monotone" dataKey="h" stroke="#fb923c" strokeWidth={2.2} fill="url(#projGrad)" dot={false} isAnimationActive={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+
+      <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+        {overdue ? (
+          <>This part is already past its {Math.round(cycleDays)}-day cycle — H keeps rising the longer it runs unserviced.</>
+        ) : (
+          <>H rises as the part ages and crosses 1.0 on <span className="font-medium text-rose-500 dark:text-rose-400">{fmtTsLong(dueMs)}</span> — its predicted maintenance date. It keeps climbing beyond to show continued degradation if left unserviced.</>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── ClassifierRiskChart ────────────────────────────────────────────────────
+// The 12-hour failure PROBABILITY over time (the XGBoost classifier output), as %.
+// Flat near 0 when healthy, spiking toward 100% when sensor patterns look dangerous —
+// this demonstrates the classifier is live and reacting, even if it reads ~0 right now.
+export function ClassifierRiskChart({
+  data,
+  threshold,
+  asOf,
+}: {
+  data: { datetime: string; risk: number; label?: number }[];
+  threshold: number;
+  asOf?: string;
+}) {
+  const ct = useChartTheme();
+  const pts = useMemo(
+    () => data.map((p) => ({ ts: new Date(p.datetime).getTime(), risk: p.risk * 100 })),
+    [data],
+  );
+
+  // Actual failure windows (runs of label === 1) + the peak-risk point in each, so we can
+  // mark every failure with a clear dot instead of an unreadable 12-hour needle.
+  const { failWindows, events } = useMemo(() => {
+    const failWindows: { x1: number; x2: number }[] = [];
+    const events: { ts: number; risk: number; caught: boolean }[] = [];
+    let win: { x1: number; x2: number } | null = null;
+    let peak: { ts: number; risk: number } | null = null;
+    const close = () => {
+      if (win) failWindows.push(win);
+      if (peak) events.push({ ...peak, caught: peak.risk >= threshold * 100 });
+      win = null;
+      peak = null;
+    };
+    for (const p of data) {
+      const ms = new Date(p.datetime).getTime();
+      const r = p.risk * 100;
+      if (p.label === 1) {
+        if (!win) { win = { x1: ms, x2: ms }; peak = { ts: ms, risk: r }; }
+        else { win.x2 = ms; if (!peak || r > peak.risk) peak = { ts: ms, risk: r }; }
+      } else if (win) {
+        close();
+      }
+    }
+    close();
+    return { failWindows, events };
+  }, [data, threshold]);
+
+  const caughtCount = events.filter((e) => e.caught).length;
+  const asOfMs = asOf ? new Date(asOf).getTime() : null;
+  const spanHours = pts.length > 1 ? (pts[pts.length - 1].ts - pts[0].ts) / 3_600_000 : 8760;
+  const domainMin = pts.length ? pts[0].ts : 0;
+  const domainMax = pts.length ? pts[pts.length - 1].ts : 1;
+
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={220}>
+        <AreaChart data={pts} margin={{ top: 14, right: 16, bottom: 4, left: -6 }}>
+          <defs>
+            <linearGradient id="clsGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.6} />
+              <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid stroke={ct.grid} vertical={false} />
+          <XAxis
+            dataKey="ts"
+            type="number"
+            scale="time"
+            domain={[domainMin, domainMax]}
+            tickFormatter={(v) => fmtTs(Number(v), spanHours)}
+            tick={ct.tick}
+            minTickGap={64}
+            stroke={ct.axisLine}
+          />
+          <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tickFormatter={(v) => `${v}%`} tick={ct.tick} stroke={ct.axisLine} />
+          <Tooltip
+            {...ct.tt}
+            labelFormatter={(v) => fmtTsLong(Number(v))}
+            formatter={(v) => [`${Number(v).toFixed(1)}%`, "failure chance (12h)"]}
+          />
+          {/* Faint band marking each actual failure window (thin at year scale) */}
+          {failWindows.map((w, i) => (
+            <ReferenceArea key={i} x1={w.x1} x2={w.x2} fill="#10b981" fillOpacity={0.18} ifOverflow="extendDomain" />
+          ))}
+          {/* A vertical guide + dot at each real failure, so events are visible even when
+              the underlying spike is only a few pixels wide. */}
+          {events.map((e, i) => (
+            <ReferenceLine key={`l${i}`} x={e.ts} stroke="#10b981" strokeOpacity={0.5} strokeWidth={1} />
+          ))}
+          <ReferenceLine
+            y={threshold * 100}
+            stroke="#6366f1"
+            strokeDasharray="5 4"
+            label={{ value: `alert (${Math.round(threshold * 100)}%)`, position: "insideTopRight", fontSize: 10, fill: "#6366f1" }}
+          />
+          {asOfMs && (
+            <ReferenceLine x={asOfMs} stroke="#94a3b8" strokeWidth={1.4} strokeDasharray="3 3"
+              label={{ value: "selected", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }} />
+          )}
+          <Area type="monotone" dataKey="risk" stroke="#f43f5e" strokeWidth={2} fill="url(#clsGrad)" dot={false} isAnimationActive={false} />
+          {/* Peak-of-spike markers: green ring = model caught it, amber = missed */}
+          {events.map((e, i) => (
+            <ReferenceDot
+              key={`d${i}`}
+              x={e.ts}
+              y={e.risk}
+              r={4.5}
+              fill={e.caught ? "#10b981" : "#f59e0b"}
+              stroke="#ffffff"
+              strokeWidth={1.5}
+              ifOverflow="extendDomain"
+            />
+          ))}
+        </AreaChart>
+      </ResponsiveContainer>
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+        <span className="flex items-center gap-1.5"><span className="inline-block h-2 w-4 rounded-sm" style={{ background: "#f43f5e" }} /> model&apos;s failure chance</span>
+        <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#10b981" }} /> failure the model caught</span>
+        {caughtCount < events.length && (
+          <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#f59e0b" }} /> failure it missed</span>
+        )}
+        <span>· {caughtCount}/{events.length} caught</span>
+      </div>
     </div>
   );
 }
@@ -291,7 +504,7 @@ export function SurvivalCurveChart({
     if (!asOf) return `+${Math.round(days)}d`;
     const d = new Date(asOf);
     d.setTime(d.getTime() + days * 86_400_000);
-    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   };
 
   const merged = curve.map((p) => {
@@ -356,9 +569,9 @@ export function SurvivalCurveChart({
         />
         <Tooltip
           {...ct.tt}
-          formatter={(v, n) => [
+          formatter={(v, _n, item) => [
             `${(Number(v) * 100).toFixed(0)}%`,
-            n === "model" ? "this machine" : "typical machine",
+            item?.dataKey === "baseline" ? "typical machine" : "this machine",
           ]}
           labelFormatter={(d) =>
             asOf
