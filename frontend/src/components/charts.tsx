@@ -344,13 +344,22 @@ export function ClassifierRiskChart({
   asOf?: string;
 }) {
   const ct = useChartTheme();
+  const asOfMs = asOf ? new Date(asOf).getTime() : null;
+
+  // Show FROM the selected date onward (as-of semantics). If almost nothing follows the
+  // selection, fall back to the full series so the chart is never empty.
+  const vis = useMemo(() => {
+    if (!asOfMs) return data;
+    const f = data.filter((p) => new Date(p.datetime).getTime() >= asOfMs);
+    return f.length > 1 ? f : data;
+  }, [data, asOfMs]);
+
   const pts = useMemo(
-    () => data.map((p) => ({ ts: new Date(p.datetime).getTime(), risk: p.risk * 100 })),
-    [data],
+    () => vis.map((p) => ({ ts: new Date(p.datetime).getTime(), risk: p.risk * 100 })),
+    [vis],
   );
 
-  // Actual failure windows (runs of label === 1) + the peak-risk point in each, so we can
-  // mark every failure with a clear dot instead of an unreadable 12-hour needle.
+  // Actual failure windows (runs of label === 1) within the visible range + peak-risk point.
   const { failWindows, events } = useMemo(() => {
     const failWindows: { x1: number; x2: number }[] = [];
     const events: { ts: number; risk: number; caught: boolean }[] = [];
@@ -362,7 +371,7 @@ export function ClassifierRiskChart({
       win = null;
       peak = null;
     };
-    for (const p of data) {
+    for (const p of vis) {
       const ms = new Date(p.datetime).getTime();
       const r = p.risk * 100;
       if (p.label === 1) {
@@ -374,16 +383,22 @@ export function ClassifierRiskChart({
     }
     close();
     return { failWindows, events };
-  }, [data, threshold]);
+  }, [vis, threshold]);
 
   const caughtCount = events.filter((e) => e.caught).length;
-  const asOfMs = asOf ? new Date(asOf).getTime() : null;
   const spanHours = pts.length > 1 ? (pts[pts.length - 1].ts - pts[0].ts) / 3_600_000 : 8760;
   const domainMin = pts.length ? pts[0].ts : 0;
   const domainMax = pts.length ? pts[pts.length - 1].ts : 1;
 
   return (
     <div>
+      {asOfMs && (
+        <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
+          From {fmtTsLong(asOfMs)} onward · {events.length
+            ? <>{caughtCount}/{events.length} failures caught in view</>
+            : "no failures in this window"}
+        </div>
+      )}
       <ResponsiveContainer width="100%" height={220}>
         <AreaChart data={pts} margin={{ top: 14, right: 16, bottom: 4, left: -6 }}>
           <defs>
@@ -407,14 +422,17 @@ export function ClassifierRiskChart({
           <Tooltip
             {...ct.tt}
             labelFormatter={(v) => fmtTsLong(Number(v))}
-            formatter={(v) => [`${Number(v).toFixed(1)}%`, "failure chance (12h)"]}
+            formatter={(v) => {
+              const p = Number(v);
+              const state = p >= threshold * 100 ? "  · ALERT" : "";
+              return [`${p.toFixed(1)}%${state}`, "failure chance (12h)"];
+            }}
           />
-          {/* Faint band marking each actual failure window (thin at year scale) */}
+          {/* Faint band marking each actual failure window */}
           {failWindows.map((w, i) => (
             <ReferenceArea key={i} x1={w.x1} x2={w.x2} fill="#10b981" fillOpacity={0.18} ifOverflow="extendDomain" />
           ))}
-          {/* A vertical guide + dot at each real failure, so events are visible even when
-              the underlying spike is only a few pixels wide. */}
+          {/* A vertical guide at each real failure so events are visible even when thin */}
           {events.map((e, i) => (
             <ReferenceLine key={`l${i}`} x={e.ts} stroke="#10b981" strokeOpacity={0.5} strokeWidth={1} />
           ))}
@@ -424,9 +442,10 @@ export function ClassifierRiskChart({
             strokeDasharray="5 4"
             label={{ value: `alert (${Math.round(threshold * 100)}%)`, position: "insideTopRight", fontSize: 10, fill: "#6366f1" }}
           />
+          {/* "You are here" — the selected date is the left edge of the view */}
           {asOfMs && (
-            <ReferenceLine x={asOfMs} stroke="#94a3b8" strokeWidth={1.4} strokeDasharray="3 3"
-              label={{ value: "selected", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }} />
+            <ReferenceLine x={domainMin} stroke="#6366f1" strokeWidth={1.8}
+              label={{ value: `◀ ${fmtTs(asOfMs, 8760)}`, position: "insideTopLeft", fontSize: 10, fontWeight: 700, fill: "#6366f1" }} />
           )}
           <Area type="monotone" dataKey="risk" stroke="#f43f5e" strokeWidth={2} fill="url(#clsGrad)" dot={false} isAnimationActive={false} />
           {/* Peak-of-spike markers: green ring = model caught it, amber = missed */}

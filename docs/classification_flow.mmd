@@ -1,0 +1,38 @@
+flowchart LR
+  subgraph IN["Raw inputs"]
+    direction TB
+    T["telemetry"]; E["errors"]; M["maintenance"]; MC["machines"]
+  end
+
+  FE["Feature engineering<br/>rolling sensor stats · error counts · part age<br/>(~76 features)"]
+  FAIL["failures.csv"]:::label
+  LBL["Label<br/>fails within 12h? (1/0)"]:::label
+
+  subgraph TRAIN["Model training · XGBoost (scale_pos_weight in every fit)"]
+    direction TB
+    S1["1 · chronological 80/20 split (no shuffle)"]
+    S2["2 · Pass 1 — gain-importance selection"]
+    S3["3 · Optuna tuning (50 trials, 5-fold TimeSeriesSplit CV)"]
+    S4["4 · Pass 2 — SHAP selection → top 20"]
+    S5["5 · fit final gradient-boosted trees"]
+    S1 --> S2 --> S3 --> S4 --> S5
+  end
+
+  P["Output<br/>P(fail in next 12h) · 0–1"]:::out
+  FLAG["Flag at-risk<br/>P ≥ alert threshold"]:::flag
+  SHAP["Explain (SHAP)<br/>which sensors drove it"]:::shap
+  EVAL["Evaluate<br/>precision · recall · AUC-PR 0.91"]:::eval
+
+  T --> FE; E --> FE; M --> FE; MC --> FE
+  FE --> TRAIN
+  FAIL --> LBL --> TRAIN
+  TRAIN --> P
+  P --> FLAG
+  P --> SHAP
+  P --> EVAL
+
+  classDef label fill:#ffe4e6,stroke:#f43f5e,color:#0f172a;
+  classDef out fill:#e0f2fe,stroke:#0284c7,color:#0f172a;
+  classDef flag fill:#fef3c7,stroke:#f59e0b,color:#0f172a;
+  classDef shap fill:#ede9fe,stroke:#8b5cf6,color:#0f172a;
+  classDef eval fill:#d1fae5,stroke:#10b981,color:#0f172a;

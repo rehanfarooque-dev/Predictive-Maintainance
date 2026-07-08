@@ -30,8 +30,9 @@ export default function ClassificationDetail() {
   const hasPeak = peak.risk > 0.5;
 
   // Validation: count actual failure windows (label===1 runs) and how many the model
-  // flagged (risk crossed the alert threshold inside the window).
-  const ts = data.timeseries ?? [];
+  // flagged (risk crossed the alert threshold inside the window) — from the selected date
+  // onward, matching the chart's as-of view.
+  const ts = (data.timeseries ?? []).filter((p) => p.datetime >= data.as_of);
   let nWindows = 0;
   let nCaught = 0;
   let inRun = false;
