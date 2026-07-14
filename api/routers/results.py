@@ -31,6 +31,13 @@ def features(store: ArtifactStore = Depends(require_ready)):
     return store.features()
 
 
+@router.get("/evaluation")
+def evaluation(threshold: float = 0.5, store: ArtifactStore = Depends(require_ready)):
+    """Full model-performance report (accuracy, precision, recall, F1, AUC-PR, AUC-ROC,
+    confusion matrix, threshold sweep, per-component). Recomputed live at `threshold`."""
+    return store.evaluation(threshold)
+
+
 @router.get("/model-reports")
 def model_reports(as_of: Optional[str] = None, threshold: float = 0.5,
                   store: ArtifactStore = Depends(require_ready)):

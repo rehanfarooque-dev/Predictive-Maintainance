@@ -76,22 +76,31 @@ export function pdmServiceDate(asOf: string | undefined, daysUntil: number): str
 }
 
 /**
- * Recurrence urgency — the HYBRID model. The maintenance clock resets at the last
- * classifier-predicted failure; H(t) grows on the alarm-recurrence cycle. Due when H ≥ 1.
+ * Risk score = cumulative hazard implied by the 12h classifier probability:
+ *   H = −ln(1 − p)
+ * This makes the Risk Score page consistent with the Classification page by construction:
+ * H ≥ 1 exactly when p ≥ 1 − e⁻¹ ≈ 0.63 (≈ the default alert). So a machine that reads
+ * "healthy 23%" in Classification reads H ≈ 0.27 (healthy) here — never a contradiction.
  */
-export function recurrenceUrgency(it: { surrogate_due?: boolean; surrogate_days_until_due?: number }): Urgency {
-  const days = it.surrogate_days_until_due ?? 999;
-  if (it.surrogate_due || days <= 0) return "overdue";
-  if (days < 7) return "urgent";
-  if (days < 30) return "soon";
+export function clsHazard(p: number): number {
+  const q = Math.min(Math.max(p, 0), 0.999);
+  return -Math.log(1 - q);
+}
+
+/** Urgency straight from the classifier — mirrors Classification's healthy/watch/at-risk bands. */
+export function clsUrgency(it: { at_risk?: boolean; classifier_risk?: number }): Urgency {
+  const p = it.classifier_risk ?? 0;
+  if (it.at_risk) return "overdue";   // flagged → Service now (same as Classification)
+  if (p >= 0.30) return "urgent";
+  if (p >= 0.10) return "soon";
   return "planned";
 }
 
-export function recurrenceTimeLeft(it: { surrogate_due?: boolean; surrogate_days_until_due?: number }): string {
-  if (it.surrogate_due) return "Due now";
-  const d = it.surrogate_days_until_due ?? 0;
-  if (d < 1) return "<1 day";
-  return `~${Math.round(d)} days`;
+/** Kept as aliases so existing call sites stay consistent — both now classifier-driven. */
+export const recurrenceUrgency = clsUrgency;
+export function recurrenceTimeLeft(it: { at_risk?: boolean; classifier_risk?: number }): string {
+  const u = clsUrgency(it);
+  return u === "overdue" ? "Service now" : u === "urgent" ? "Watch" : u === "soon" ? "Elevated" : "Healthy";
 }
 
 export function fmtPct(x: number, digits = 1): string {

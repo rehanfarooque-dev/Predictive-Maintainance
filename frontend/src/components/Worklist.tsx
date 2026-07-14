@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { FleetItem, Urgency } from "@/lib/types";
-import { URGENCY_META, riskScoreColor, prettyModel, prettyComp, pdmServiceDate, recurrenceUrgency, recurrenceTimeLeft } from "@/lib/format";
+import { URGENCY_META, riskScoreColor, prettyModel, prettyComp, clsHazard, fmtProb, recurrenceUrgency } from "@/lib/format";
 import { GlassCard, cn } from "@/components/ui";
 import { TableToolbar, FilterSelect, SortHeader, useTableSort } from "@/components/table";
 
@@ -14,9 +14,8 @@ function getVal(it: FleetItem, k: string): number | string {
   switch (k) {
     case "id":      return it.machineID;
     case "urgency": return URGENCY_META[recurrenceUrgency(it)].rank;
-    case "rul":     return it.surrogate_days_until_due ?? 0;
-    case "service": return it.surrogate_days_until_due ?? 0;
-    case "risk":    return it.surrogate_hazard ?? 0;
+    case "chance":  return it.classifier_risk;
+    case "risk":    return clsHazard(it.classifier_risk);
     default:        return 0;
   }
 }
@@ -27,11 +26,11 @@ interface WorklistProps {
   /** Controlled urgency from parent (stat cards). "all" = no urgency filter. */
   urgencyFilter?: Urgency | "all";
   onUrgencyChange?: (u: Urgency | "all") => void;
-  /** Resolved as-of timestamp — anchors the projected service date. */
+  /** Accepted for compatibility; the worklist is now classifier-driven. */
   asOf?: string;
 }
 
-export function Worklist({ items, filterable = false, urgencyFilter = "all", onUrgencyChange, asOf }: WorklistProps) {
+export function Worklist({ items, filterable = false, urgencyFilter = "all", onUrgencyChange }: WorklistProps) {
   const router = useRouter();
   const [search,  setSearch]  = useState("");
   const [machine, setMachine] = useState("all");
@@ -123,25 +122,23 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
       <GlassCard className="overflow-hidden">
           <table className="w-full text-sm">
             <colgroup>
-              <col style={{ width: "28%" }} />
-              <col style={{ width: "18%" }} />
-              <col style={{ width: "16%" }} />
-              <col style={{ width: "16%" }} />
+              <col style={{ width: "34%" }} />
+              <col style={{ width: "22%" }} />
+              <col style={{ width: "22%" }} />
               <col />
             </colgroup>
             <thead className="sticky top-0 bg-white/95 backdrop-blur dark:bg-slate-950/95">
               <tr className="border-b border-slate-200 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-white/10">
                 <SortHeader label="Machine"        sortKey="id"      active={sortKey === "id"}      dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" />
-                <SortHeader label="Recommendation" sortKey="urgency" active={sortKey === "urgency"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Recurrence risk: due when H(t) since the last predicted failure reaches 1.0." />
-                <SortHeader label="Time to service" sortKey="rul"    active={sortKey === "rul"}     dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Days until the alarm-recurrence risk reaches H = 1.0." />
-                <SortHeader label="Service by"     sortKey="service" active={sortKey === "service"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Projected date the recurrence risk reaches 1.0." />
-                <SortHeader label="Risk score H(t)" sortKey="risk"   active={sortKey === "risk"}    dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Recurrence cumulative hazard since the last classifier-predicted failure. 1.0 = service due." />
+                <SortHeader label="Recommendation" sortKey="urgency" active={sortKey === "urgency"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Service now if the 12h classifier flags failure; else by failure chance." />
+                <SortHeader label="12h failure chance" sortKey="chance" active={sortKey === "chance"} dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Same value as the Classification page — probability of failure in the next 12 hours." />
+                <SortHeader label="Risk score H(t)" sortKey="risk"   active={sortKey === "risk"}    dir={dir} onSort={toggle} className="whitespace-nowrap px-4 py-3" title="Cumulative hazard from the failure chance: H = −ln(1−p). H ≥ 1 ⇔ ~63% ⇔ service." />
               </tr>
             </thead>
             <tbody>
               {view.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-400 dark:text-slate-500">
+                  <td colSpan={4} className="px-4 py-10 text-center text-sm text-slate-400 dark:text-slate-500">
                     No machines match these filters.
                   </td>
                 </tr>
@@ -149,7 +146,7 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
               {view.map((it) => {
                 const urg = recurrenceUrgency(it);
                 const u = URGENCY_META[urg];
-                const h = it.surrogate_hazard ?? 0;
+                const h = clsHazard(it.classifier_risk);
                 return (
                   <tr
                     key={it.machineID}
@@ -194,24 +191,17 @@ export function Worklist({ items, filterable = false, urgencyFilter = "all", onU
                       </span>
                     </td>
 
-                    {/* Time to service (cycle-based) */}
+                    {/* 12h failure chance — identical to the Classification page */}
                     <td className="px-4 py-3.5">
                       <span className={cn(
                         "font-semibold tabular-nums",
-                        urg === "overdue" ? "text-rose-600 dark:text-rose-400"
-                          : urg === "urgent" ? "text-amber-600 dark:text-amber-400"
-                          : "text-slate-600 dark:text-slate-300",
+                        it.at_risk ? "text-rose-600 dark:text-rose-400" : "text-slate-600 dark:text-slate-300",
                       )}>
-                        {recurrenceTimeLeft(it)}
+                        {fmtProb(it.classifier_risk)}
                       </span>
                     </td>
 
-                    {/* Service by date (projected from the recurrence cycle) */}
-                    <td className="px-4 py-3.5 tabular-nums text-slate-500 dark:text-slate-400">
-                      {pdmServiceDate(asOf, it.surrogate_days_until_due ?? 0)}
-                    </td>
-
-                    {/* Recurrence risk H(t) — bar toward 1.0 + number */}
+                    {/* Risk score H(t) = −ln(1−p) — bar toward 1.0 + number */}
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-3">
                         <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-white/10">

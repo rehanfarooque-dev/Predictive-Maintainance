@@ -171,6 +171,33 @@ export interface MonitorItem {
   risk: number;
 }
 
+// Full model-performance report — recomputed live at the current alert threshold.
+export interface ModelEvaluation {
+  threshold: number;
+  n_test_rows: number;
+  n_positives: number;
+  positive_rate: number;
+  accuracy: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  auc_pr: number;
+  auc_roc: number;
+  confusion: { tn: number; fp: number; fn: number; tp: number };
+  threshold_table: ThresholdRow[];
+  per_component: ComponentRow[];
+  model: {
+    algorithm: string;
+    horizon_hours: number;
+    n_features: number;
+    selected_features: string[];
+    best_params: Record<string, number>;
+    test_size_pct: number;
+  };
+  plots: string[];
+  built_at: string | null;
+}
+
 export interface ModelReports {
   as_of: string;
   n_machines: number;

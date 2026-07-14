@@ -475,6 +475,58 @@ class ArtifactStore:
         return {"selected_features": self.selected_features,
                 "best_params": self.reports.get("best_params", {})}
 
+    def evaluation(self, threshold: float = 0.5) -> dict:
+        """Full model-performance report, recomputed live from scored.parquet.
+
+        Everything is derived from the SAME chronological held-out test split used in
+        training, so the numbers stay correct after any retrain (no stale constants).
+        Threshold-dependent metrics (accuracy/precision/recall/F1, confusion matrix)
+        follow the caller's threshold; AUC-PR / AUC-ROC are threshold-free.
+        """
+        from sklearn.metrics import (
+            accuracy_score, average_precision_score, confusion_matrix,
+            f1_score, precision_score, recall_score, roc_auc_score,
+        )
+
+        y_true, y_prob = chronological_test_split(self.scored, self.cfg.evaluation.test_size_pct)
+        y_pred = (y_prob >= float(threshold)).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+        summary = self.results_summary()
+        sweep = self.threshold_sweep(threshold)
+        n_pos = int(np.asarray(y_true).sum())
+        n_test = int(len(y_true))
+
+        return {
+            "threshold": float(threshold),
+            "n_test_rows": n_test,
+            "n_positives": n_pos,
+            "positive_rate": round(n_pos / max(n_test, 1), 5),
+            # --- headline metrics ---
+            "accuracy": round(float(accuracy_score(y_true, y_pred)), 4),
+            "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 4),
+            "recall": round(float(recall_score(y_true, y_pred, zero_division=0)), 4),
+            "f1": round(float(f1_score(y_true, y_pred, zero_division=0)), 4),
+            "auc_pr": round(float(average_precision_score(y_true, y_prob)), 4),
+            "auc_roc": round(float(roc_auc_score(y_true, y_prob)), 4),
+            # --- confusion matrix ---
+            "confusion": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
+            # --- supporting views ---
+            "threshold_table": sweep.get("table", []),
+            "per_component": self.components(threshold).get("items", []),
+            "model": {
+                "algorithm": "XGBoost (gradient-boosted trees)",
+                "horizon_hours": summary.get("horizon_hours"),
+                "n_features": summary.get("n_features_final"),
+                "selected_features": self.selected_features,
+                "best_params": summary.get("best_params", {}),
+                "test_size_pct": float(self.cfg.evaluation.test_size_pct),
+            },
+            "plots": [n for n in ("pr_curve", "roc_curve", "shap_summary", "optuna_history")
+                      if self.plot_path(n) is not None],
+            "built_at": self.rul_meta.get("built_at"),
+        }
+
     def model_reports(self, as_of, threshold: float = 0.5) -> dict:
         """Plain-language summary of BOTH models for the reports page."""
         summary = self.results_summary()

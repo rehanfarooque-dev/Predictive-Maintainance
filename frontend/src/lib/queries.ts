@@ -52,6 +52,17 @@ export function useThresholdSweep(threshold: number) {
   });
 }
 
+/** Full model-performance report. Keyed on the alert threshold so it auto-updates. */
+export function useEvaluation() {
+  const { threshold } = useControls();
+  return useQuery({
+    queryKey: ["evaluation", threshold],
+    queryFn: () => api.evaluation(threshold),
+    placeholderData: (prev) => prev,
+    staleTime: 60_000,
+  });
+}
+
 export function useComponents() {
   return useQuery({ queryKey: ["components"], queryFn: () => api.components() });
 }

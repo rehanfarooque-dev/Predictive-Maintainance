@@ -1,0 +1,85 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Segoe UI, Inter, system-ui, sans-serif",
+    "fontSize": "15px",
+    "primaryColor": "#eef2ff",
+    "primaryBorderColor": "#6366f1",
+    "primaryTextColor": "#0f172a",
+    "lineColor": "#94a3b8",
+    "clusterBkg": "#f8fafc",
+    "clusterBorder": "#cbd5e1"
+  },
+  "flowchart": { "curve": "basis", "nodeSpacing": 55, "rankSpacing": 75, "padding": 16 }
+}}%%
+flowchart LR
+
+  %% ───────────── 1 · INPUT ─────────────
+  subgraph IN["1 · INPUT — shared with Classification"]
+    direction TB
+    FE["Feature engineering<br/>rolling sensor stats<br/>error counts · part age"]
+    XGB["XGBoost classifier<br/>20 features · 12-hour horizon"]
+    FE --> XGB
+  end
+
+  P(["p = P(failure within 12 hours)<br/>0.00 to 1.00"])
+
+  %% ───────────── 2 · RISK SCORE ─────────────
+  subgraph RS["2 · RISK SCORE"]
+    direction TB
+    H["H = −ln(1 − p)<br/>probability → cumulative hazard"]
+    T["Service line<br/>H = 1.0 ⇔ p ≈ 0.63 ≈ alert threshold"]
+    MAP["1.7% → 0.02 · 23.4% → 0.27<br/>63% → 1.00 · 91% → 2.41"]
+    H --> T --> MAP
+  end
+
+  Q{"p ≥ alert<br/>threshold ?"}
+
+  %% ───────────── 3 · URGENCY BANDS ─────────────
+  subgraph BANDS["3 · URGENCY"]
+    direction TB
+    NOW["Service now<br/>flagged by classifier"]
+    URG["Watch closely<br/>p ≥ 0.30"]
+    SOON["Elevated · monitor<br/>p 0.10 to 0.30"]
+    PLAN["Healthy<br/>p under 0.10"]
+  end
+
+  %% ───────────── 4 · OUTPUT ─────────────
+  UI["Risk Score page<br/>hero · worklist<br/>fleet map · donut · KPIs"]
+  SURV["Survival forecast<br/>Weibull AFT → RUL<br/>supporting view"]
+
+  %% ───────────── edges ─────────────
+  XGB --> P --> H
+  MAP --> Q
+  Q -- yes --> NOW
+  Q -- no --> URG
+  Q -- no --> SOON
+  Q -- no --> PLAN
+  NOW --> UI
+  URG --> UI
+  SOON --> UI
+  PLAN --> UI
+  SURV -.-> UI
+
+  %% ───────────── styling ─────────────
+  classDef src  fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0f172a
+  classDef prob fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+  classDef risk fill:#e0e7ff,stroke:#6366f1,stroke-width:2px,color:#0f172a
+  classDef gate fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#0f172a
+  classDef now  fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+  classDef urg  fill:#ffedd5,stroke:#ea580c,stroke-width:2px,color:#0f172a
+  classDef soon fill:#fef3c7,stroke:#f59e0b,stroke-width:2px,color:#0f172a
+  classDef plan fill:#d1fae5,stroke:#10b981,stroke-width:2px,color:#0f172a
+  classDef ui   fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+  classDef sup  fill:#f1f5f9,stroke:#94a3b8,stroke-width:1.5px,color:#475569
+
+  class FE,XGB src
+  class P prob
+  class H,T,MAP risk
+  class Q gate
+  class NOW now
+  class URG urg
+  class SOON soon
+  class PLAN plan
+  class UI ui
+  class SURV sup

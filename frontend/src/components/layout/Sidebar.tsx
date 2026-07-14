@@ -9,6 +9,7 @@ import { cn } from "@/components/ui";
 import {
   IconActivity,
   IconTrendingDown,
+  IconChart,
   IconChevronsLeft,
   IconChevronsRight,
   IconMoon,
@@ -33,6 +34,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/classification", label: "Classification", sub: "12-hour failure forecast",  icon: IconActivity },
       { href: "/risk",           label: "Risk Score",     sub: "Maintenance cycle (PdM)",   icon: IconTrendingDown },
+      { href: "/performance",    label: "Model Performance", sub: "Accuracy & evaluation",  icon: IconChart },
     ],
   },
 ];

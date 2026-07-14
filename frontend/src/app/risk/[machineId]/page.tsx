@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 
 import { useMachine } from "@/lib/queries";
-import { rulLabel, fmtPct, prettyModel, prettyComp, prettySensor, riskScoreColor } from "@/lib/format";
+import { rulLabel, fmtProb, prettyModel, prettyComp, prettySensor, riskScoreColor, clsHazard, clsUrgency, URGENCY_META } from "@/lib/format";
 import { GlassCard, PageHeader, SectionTitle, ModelStrip, LoadingBlock, ErrorBlock, cn } from "@/components/ui";
-import { RulGauge, SurvivalCurveChart, SensorViolationChart, MaintenanceProjectionChart } from "@/components/charts";
+import { RulGauge, SurvivalCurveChart, SensorViolationChart } from "@/components/charts";
 import type { SensorBreakdown } from "@/lib/types";
 
 function SensorGauge({ s }: { s: SensorBreakdown }) {
@@ -52,15 +52,11 @@ export default function RiskDetail() {
   if (isError) return <ErrorBlock error={error} />;
   if (!data) return null;
 
-  // Hybrid recurrence model (PRIMARY): clock resets at the last classifier-predicted failure.
-  const surH = data.surrogate_hazard ?? 0;
-  const surCycle = data.surrogate_cycle_days ?? 53;
-  const surShape = data.surrogate_shape ?? 1.33;
-  const surSince = data.surrogate_days_since_alarm ?? null;
-  const surUntil = data.surrogate_days_until_due ?? surCycle;
-  const surDue = data.surrogate_due ?? false;
-  const surInAlarm = data.surrogate_in_alarm ?? false;
-  const surPct = Math.min(surH, 1);
+  // Risk score derived from the 12h classifier so it matches the Classification page exactly.
+  const clsH = clsHazard(data.classifier_risk);     // H = −ln(1−p)
+  const urg = clsUrgency(data);                     // overdue / urgent / soon / planned
+  const due = data.at_risk;                         // service now (same flag as Classification)
+  const uMeta = URGENCY_META[urg];
 
   return (
     <div className="space-y-6">
@@ -74,75 +70,64 @@ export default function RiskDetail() {
         }
       />
 
-      <ModelStrip tone="indigo" label="Risk-Score · Hybrid recurrence">
-        Clock resets at the last predicted failure · due when H(t) reaches 1.0 · {Math.round((data.surrogate_recall ?? 0) * 100)}% of real failures had a preceding alarm
+      <ModelStrip tone="indigo" label="Risk-Score">
+        Cumulative hazard from the 12h failure chance: H = −ln(1−p) · same signal as Classification · H ≥ 1 ⇔ service
       </ModelStrip>
 
-      {/* ── Decision hero: recurrence recommendation + H(t) meter ── */}
+      {/* ── Decision hero: classifier-consistent risk score + status ── */}
       <GlassCard className="overflow-hidden p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-4">
-            <span
-              className="h-14 w-1.5 rounded-full"
-              style={{
-                background: surDue ? "#f43f5e" : surUntil < 14 ? "#fb923c" : "#10b981",
-                boxShadow: `0 0 18px ${surDue ? "#f43f5e66" : "#10b98155"}`,
-              }}
-            />
+            <span className="h-14 w-1.5 rounded-full" style={{ background: uMeta.color, boxShadow: `0 0 18px ${uMeta.glow}` }} />
             <div>
               <div className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-                {surInAlarm ? "Service now — failure predicted" : surDue ? "Service due now" : `Next service in ~${Math.round(surUntil)} days`}
+                {due ? "Service now — failure predicted"
+                  : urg === "urgent" ? "Watch closely"
+                  : urg === "soon" ? "Elevated — monitor"
+                  : "Healthy — no service needed"}
               </div>
               <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                {surInAlarm
-                  ? `classifier flags failure within 12h (${fmtPct(data.classifier_risk)}) — act now`
-                  : surSince == null
-                    ? "no predicted-failure alarm on record yet"
-                    : `last predicted failure ${Math.round(surSince)} days ago · recurrence cycle ${Math.round(surCycle)} days`}
+                {due
+                  ? `12h classifier flags failure (${fmtProb(data.classifier_risk)}) — act now`
+                  : `12h failure chance ${fmtProb(data.classifier_risk)} · sensors ${data.violation_count} of 4 out of band`}
               </div>
             </div>
           </div>
-          <span
-            className={cn(
-              "rounded-full border px-3 py-1 text-sm font-semibold",
-              surDue
-                ? "border-rose-500/30 bg-rose-500/15 text-rose-700 dark:text-rose-300"
-                : surUntil < 14
-                  ? "border-orange-500/30 bg-orange-500/15 text-orange-700 dark:text-orange-300"
-                  : "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-            )}
-          >
-            {surDue ? "Due" : surUntil < 14 ? "Soon" : "Healthy"}
-          </span>
+          <span className={cn("rounded-full border px-3 py-1 text-sm font-semibold", uMeta.badge)}>{uMeta.label}</span>
         </div>
 
-        {/* Recurrence H(t) meter */}
-        <div className="mt-6">
-          <div className="mb-1.5 flex items-baseline justify-between">
-            <span className="text-sm font-medium text-slate-500 dark:text-slate-400">Recurrence risk H(t)</span>
-            <span className="text-2xl font-bold tabular-nums text-slate-900 dark:text-white">
-              {surH.toFixed(2)}<span className="text-sm font-medium text-slate-400"> / 1.00</span>
-            </span>
+        {/* Two aligned readings — identical to the Classification page by construction */}
+        <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">12-hour failure chance</span>
+              <Link href={`/classification/${id}`} className="text-[11px] text-indigo-500 hover:underline dark:text-indigo-300">Classification →</Link>
+            </div>
+            <div className={cn("mt-1 text-3xl font-bold tabular-nums", due ? "text-rose-600 dark:text-rose-400" : "text-slate-900 dark:text-white")}>
+              {fmtProb(data.classifier_risk)}
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+              <div className="h-full rounded-full" style={{ width: `${Math.min(data.classifier_risk, 1) * 100}%`, background: due ? "#f43f5e" : "#34d399" }} />
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">{due ? "flagged — above alert" : "sensors normal right now"}</div>
           </div>
-          <div className="relative h-3 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
-            <div className="h-full rounded-full transition-all" style={{ width: `${surPct * 100}%`, background: riskScoreColor(surPct * 100) }} />
-          </div>
-          <div className="mt-1 flex justify-between text-[11px] text-slate-500">
-            <span>0 · just serviced</span>
-            <span>{Math.round(surPct * 100)}% to next</span>
-            <span>1.0 · service</span>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-white/10 dark:bg-white/5">
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Risk score H(t)</span>
+              <span className="text-3xl font-bold tabular-nums text-slate-900 dark:text-white">
+                {clsH.toFixed(2)}<span className="text-sm font-medium text-slate-400"> / 1.00</span>
+              </span>
+            </div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-white/10">
+              <div className="h-full rounded-full transition-all" style={{ width: `${Math.min(clsH, 1) * 100}%`, background: riskScoreColor(Math.min(clsH, 1) * 100) }} />
+            </div>
+            <div className="mt-1 flex justify-between text-[11px] text-slate-500">
+              <span>0 · healthy</span>
+              <span>1.0 · service (≈63%)</span>
+            </div>
           </div>
         </div>
-      </GlassCard>
-
-      {/* ── Projection: recurrence H(t) climbing from the last predicted failure ── */}
-      <GlassCard className="p-5">
-        <SectionTitle
-          title="Projected recurrence risk"
-          subtitle={`From the last predicted failure, H(t) climbs and crosses 1.0 on the next predicted service date (${Math.round(surCycle)}-day recurrence cycle).`}
-          info="Hybrid model. The clock starts at the machine's last classifier-predicted failure; H(t) = (days since that alarm / recurrence cycle)^shape is projected forward. Crossing 1.0 = the next predicted service date. Validated: most real failures were preceded by an alarm."
-        />
-        <MaintenanceProjectionChart asOf={data.as_of} elapsedDays={surSince ?? 0} cycleDays={surCycle} shape={surShape} />
       </GlassCard>
 
       {/* ── Survival forecast (supporting statistical view) ── */}
@@ -150,9 +135,13 @@ export default function RiskDetail() {
         <SectionTitle title="Survival forecast" subtitle="Supporting statistical view — chance of running over the coming days." />
         <div className="grid gap-6 lg:grid-cols-3">
           <GlassCard className="flex flex-col justify-center p-5">
-            <RulGauge rulDays={data.rul_days} capped={data.is_capped} />
+            <RulGauge rulDays={data.rul_days} capped={data.is_capped} dueNow={due} />
             <p className="mt-2 text-center text-sm text-slate-500 dark:text-slate-400">
-              est. {rulLabel(data.rul_days, data.is_capped)} · typical {Math.round(data.rul_ci_low_days)}–{Math.round(data.rul_ci_high_days)} days
+              {due ? (
+                <>service now — classifier flags failure<br /><span className="text-xs">statistical est. was ~{Math.round(data.rul_days)} days</span></>
+              ) : (
+                <>est. {rulLabel(data.rul_days, data.is_capped)} · typical {Math.round(data.rul_ci_low_days)}–{Math.round(data.rul_ci_high_days)} days</>
+              )}
             </p>
           </GlassCard>
           <GlassCard className="p-5 lg:col-span-2">
@@ -163,6 +152,7 @@ export default function RiskDetail() {
               ciLow={data.rul_ci_low_days}
               ciHigh={data.rul_ci_high_days}
               asOf={data.as_of}
+              dueNow={due}
             />
           </GlassCard>
         </div>

@@ -6,6 +6,7 @@ import type {
   InferenceResult,
   MachineDetail,
   MetricsSummary,
+  ModelEvaluation,
   ModelReports,
   MonitorResponse,
   ThresholdSweep,
@@ -51,6 +52,7 @@ export const api = {
   machine: (id: number, asOf: string | undefined, threshold: number) =>
     get<MachineDetail>(`/machines/${id}${qs({ as_of: asOf, threshold })}`),
   metricsSummary: () => get<MetricsSummary>("/results/summary"),
+  evaluation: (threshold: number) => get<ModelEvaluation>(`/results/evaluation${qs({ threshold })}`),
   thresholdSweep: (threshold?: number) =>
     get<ThresholdSweep>(`/results/threshold-sweep${qs({ threshold })}`),
   components: (threshold = 0.5) =>

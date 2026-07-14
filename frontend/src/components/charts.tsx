@@ -216,42 +216,53 @@ export function MaintenanceProjectionChart({
   elapsedDays,
   cycleDays,
   shape,
+  dueNow = false,
+  dueNowLabel = "REPLACE NOW",
 }: {
   asOf?: string;
   elapsedDays: number;
   cycleDays: number;
   shape: number;
+  dueNow?: boolean;      // classifier predicts imminent failure → replace on the selected day
+  dueNowLabel?: string;
 }) {
   const ct = useChartTheme();
+
+  const PAD_DAYS = 15;  // left padding so the "you are here" marker isn't on the y-axis
 
   const { pts, startMs, dueMs, maxH } = useMemo(() => {
     const DAY = 86_400_000;
     const start = asOf ? new Date(asOf).getTime() : 0;
     const cycle = cycleDays > 0 ? cycleDays : 1;
     const s = shape > 0 ? shape : 1;
+    // When the classifier flags failure now, the machine is AT the maintenance threshold:
+    // pin its effective age to the full cycle so H = 1.0 exactly on the selected day.
+    const effElapsed = dueNow ? cycle : elapsedDays;
 
     // Project until H ≈ 2.2 (well past the maintenance line) so the crossing is clear.
     const targetMaxH = 2.2;
     const ageAtMax = cycle * Math.pow(targetMaxH, 1 / s);
-    const totalDays = Math.max(ageAtMax - elapsedDays, cycle * 0.75);
+    const totalDays = Math.max(ageAtMax - effElapsed, cycle * 0.75);
 
     const step = Math.max(totalDays / 120, 0.5);
     const pts: { ts: number; h: number }[] = [];
     let maxH = 0;
-    for (let t = 0; t <= totalDays + 1e-6; t += step) {
-      const age = elapsedDays + t; // monotonic — no reset
+    // Start PAD_DAYS *before* the selected date (age clamped ≥ 0) for left breathing room.
+    for (let t = -PAD_DAYS; t <= totalDays + 1e-6; t += step) {
+      const age = Math.max(effElapsed + t, 0); // monotonic — no reset
       const h = Math.pow(age / cycle, s);
-      maxH = Math.max(maxH, h);
+      if (t >= 0) maxH = Math.max(maxH, h);
       pts.push({ ts: start + t * DAY, h });
     }
 
-    // Maintenance-due date = where H crosses 1.0 (age == cycle).
-    const dueDays = cycle - elapsedDays;
+    // Maintenance-due date = where H crosses 1.0 (age == cycle) → the selected day when due now.
+    const dueDays = cycle - effElapsed;
     const dueMs = start + Math.max(dueDays, 0) * DAY;
 
     return { pts, startMs: start, dueMs, maxH };
-  }, [asOf, elapsedDays, cycleDays, shape]);
+  }, [asOf, elapsedDays, cycleDays, shape, dueNow]);
 
+  const domainMin = pts.length ? pts[0].ts : startMs;
   const domainMax = pts.length ? pts[pts.length - 1].ts : startMs + 1;
   const overdue = elapsedDays >= cycleDays;
   const yTop = Math.max(1.2, Math.ceil(maxH * 10) / 10);
@@ -260,7 +271,9 @@ export function MaintenanceProjectionChart({
     <div>
       <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
         Forecast from {fmtTsLong(startMs)} ·{" "}
-        {overdue ? (
+        {dueNow ? (
+          <span className="font-semibold text-rose-500">replace now — classifier predicts failure within 12h</span>
+        ) : overdue ? (
           <span className="font-semibold text-rose-500">maintenance already due (overdue)</span>
         ) : (
           <>maintenance due at H = 1.0 → <span className="font-semibold">{fmtTsLong(dueMs)}</span></>
@@ -281,7 +294,7 @@ export function MaintenanceProjectionChart({
             dataKey="ts"
             type="number"
             scale="time"
-            domain={[startMs, domainMax]}
+            domain={[domainMin, domainMax]}
             tickFormatter={(v) => fmtTs(Number(v), 8760)}
             tick={ct.tick}
             minTickGap={64}
@@ -305,8 +318,8 @@ export function MaintenanceProjectionChart({
             strokeDasharray="5 4"
             label={{ value: "maintenance (H = 1.0)", position: "insideTopRight", fontSize: 10, fill: "#f43f5e" }}
           />
-          {/* Maintenance-due date — where the rising curve crosses 1.0 */}
-          {!overdue && (
+          {/* Maintenance-due date — where the rising curve crosses 1.0 (hidden if due now) */}
+          {!overdue && !dueNow && (
             <ReferenceLine
               x={dueMs}
               stroke="#f43f5e"
@@ -315,12 +328,24 @@ export function MaintenanceProjectionChart({
               label={{ value: `▲ due ${fmtTs(dueMs, 8760)}`, position: "top", fontSize: 10, fontWeight: 700, fill: "#f43f5e" }}
             />
           )}
+          {/* Classifier predicts failure NOW → solid "replace now" marker on the selected day */}
+          {dueNow && (
+            <ReferenceLine
+              x={startMs}
+              stroke="#dc2626"
+              strokeWidth={2.4}
+              label={{ value: `▲ ${dueNowLabel} · ${fmtTs(startMs, 8760)}`, position: "top", fontSize: 10.5, fontWeight: 800, fill: "#dc2626" }}
+            />
+          )}
           <Area type="monotone" dataKey="h" stroke="#fb923c" strokeWidth={2.2} fill="url(#projGrad)" dot={false} isAnimationActive={false} />
+          {dueNow && <ReferenceDot x={startMs} y={1.0} r={5.5} fill="#dc2626" stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />}
         </AreaChart>
       </ResponsiveContainer>
 
       <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-        {overdue ? (
+        {dueNow ? (
+          <>Risk is at the maintenance threshold (<span className="font-medium text-rose-500 dark:text-rose-400">H = 1.0</span>) now — the classifier predicts failure within 12h, so replace today. The curve keeps climbing to show continued degradation if left unserviced.</>
+        ) : overdue ? (
           <>This part is already past its {Math.round(cycleDays)}-day cycle — H keeps rising the longer it runs unserviced.</>
         ) : (
           <>H rises as the part ages and crosses 1.0 on <span className="font-medium text-rose-500 dark:text-rose-400">{fmtTsLong(dueMs)}</span> — its predicted maintenance date. It keeps climbing beyond to show continued degradation if left unserviced.</>
@@ -346,13 +371,9 @@ export function ClassifierRiskChart({
   const ct = useChartTheme();
   const asOfMs = asOf ? new Date(asOf).getTime() : null;
 
-  // Show FROM the selected date onward (as-of semantics). If almost nothing follows the
-  // selection, fall back to the full series so the chart is never empty.
-  const vis = useMemo(() => {
-    if (!asOfMs) return data;
-    const f = data.filter((p) => new Date(p.datetime).getTime() >= asOfMs);
-    return f.length > 1 ? f : data;
-  }, [data, asOfMs]);
+  // Full history: everything BEFORE the selected date as well as after it, so the past the
+  // model already scored is visible. The as-of marker splits the two.
+  const vis = data;
 
   const pts = useMemo(
     () => vis.map((p) => ({ ts: new Date(p.datetime).getTime(), risk: p.risk * 100 })),
@@ -394,9 +415,9 @@ export function ClassifierRiskChart({
     <div>
       {asOfMs && (
         <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
-          From {fmtTsLong(asOfMs)} onward · {events.length
-            ? <>{caughtCount}/{events.length} failures caught in view</>
-            : "no failures in this window"}
+          Full history · you are on {fmtTsLong(asOfMs)} · {events.length
+            ? <>{caughtCount}/{events.length} failures caught</>
+            : "no failures in this period"}
         </div>
       )}
       <ResponsiveContainer width="100%" height={220}>
@@ -408,6 +429,10 @@ export function ClassifierRiskChart({
             </linearGradient>
           </defs>
           <CartesianGrid stroke={ct.grid} vertical={false} />
+          {/* Everything left of the selected date = already-happened history */}
+          {asOfMs && asOfMs > domainMin && (
+            <ReferenceArea x1={domainMin} x2={asOfMs} fill="#64748b" fillOpacity={0.07} ifOverflow="extendDomain" />
+          )}
           <XAxis
             dataKey="ts"
             type="number"
@@ -442,10 +467,10 @@ export function ClassifierRiskChart({
             strokeDasharray="5 4"
             label={{ value: `alert (${Math.round(threshold * 100)}%)`, position: "insideTopRight", fontSize: 10, fill: "#6366f1" }}
           />
-          {/* "You are here" — the selected date is the left edge of the view */}
+          {/* "You are here" — splits the shaded past from the future */}
           {asOfMs && (
-            <ReferenceLine x={domainMin} stroke="#6366f1" strokeWidth={1.8}
-              label={{ value: `◀ ${fmtTs(asOfMs, 8760)}`, position: "insideTopLeft", fontSize: 10, fontWeight: 700, fill: "#6366f1" }} />
+            <ReferenceLine x={asOfMs} stroke="#6366f1" strokeWidth={1.8} strokeDasharray="4 3"
+              label={{ value: `▼ ${fmtTs(asOfMs, 8760)}`, position: "top", fontSize: 10, fontWeight: 700, fill: "#6366f1" }} />
           )}
           <Area type="monotone" dataKey="risk" stroke="#f43f5e" strokeWidth={2} fill="url(#clsGrad)" dot={false} isAnimationActive={false} />
           {/* Peak-of-spike markers: green ring = model caught it, amber = missed */}
@@ -468,6 +493,11 @@ export function ClassifierRiskChart({
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#10b981" }} /> failure the model caught</span>
         {caughtCount < events.length && (
           <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#f59e0b" }} /> failure it missed</span>
+        )}
+        {asOfMs && (
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2.5 w-4 rounded-sm bg-slate-500/[0.16]" /> past (before the selected date)
+          </span>
         )}
         <span>· {caughtCount}/{events.length} caught</span>
       </div>
@@ -508,6 +538,7 @@ export function SurvivalCurveChart({
   ciLow,
   ciHigh,
   asOf,
+  dueNow = false,
 }: {
   curve: SurvivalPoint[];
   baseline?: SurvivalPoint[];
@@ -515,6 +546,7 @@ export function SurvivalCurveChart({
   ciLow: number;
   ciHigh: number;
   asOf?: string;
+  dueNow?: boolean;   // classifier flags failure now → replace marker sits at day 0
 }) {
   const ct = useChartTheme();
 
@@ -544,9 +576,11 @@ export function SurvivalCurveChart({
     return out;
   }, [maxDays]);
 
-  // Label on the RUL reference line: actual date when possible
-  const rulLineLabel =
-    rulDays > 0
+  // Where the "replace" marker sits: at day 0 (now) if the classifier flags failure, else RUL.
+  const markerDays = dueNow ? 0 : rulDays;
+  const rulLineLabel = dueNow
+    ? "Replace now"
+    : rulDays > 0
       ? asOf
         ? `Replace by ${daysToDate(rulDays)}`
         : `RUL ≈ ${Math.round(rulDays)} days`
@@ -618,26 +652,28 @@ export function SurvivalCurveChart({
         {baseline && (
           <Line type="monotone" dataKey="baseline" name="typical machine" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={1.4} />
         )}
-        {/* RUL / replace-by marker */}
-        {rulDays > 0 && (
+        {/* Replace marker — at "now" (day 0) when the classifier flags failure, else at RUL */}
+        {(dueNow || rulDays > 0) && (
           <ReferenceLine
-            x={rulDays}
-            stroke="#f43f5e"
-            strokeWidth={1.8}
-            label={{ value: rulLineLabel, position: "top", fontSize: 11, fontWeight: 700, fill: "#f43f5e" }}
+            x={markerDays}
+            stroke={dueNow ? "#dc2626" : "#f43f5e"}
+            strokeWidth={dueNow ? 2.4 : 1.8}
+            label={{ value: rulLineLabel, position: "top", fontSize: 11, fontWeight: dueNow ? 800 : 700, fill: dueNow ? "#dc2626" : "#f43f5e" }}
           />
         )}
-        {rulDays > 0 && (
-          <ReferenceDot x={rulDays} y={0.5} r={4.5} fill="#f43f5e" stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />
+        {(dueNow || rulDays > 0) && (
+          <ReferenceDot x={markerDays} y={dueNow ? 1.0 : 0.5} r={dueNow ? 5.5 : 4.5} fill={dueNow ? "#dc2626" : "#f43f5e"} stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />
         )}
       </ComposedChart>
     </ResponsiveContainer>
   );
 }
 
-export function RulGauge({ rulDays, capped, maxDays = 180 }: { rulDays: number; capped: boolean; maxDays?: number }) {
-  const pct = capped ? 100 : Math.min(100, (rulDays / maxDays) * 100);
-  const color = riskScoreColor(100 - pct);
+export function RulGauge({ rulDays, capped, maxDays = 180, dueNow = false }: { rulDays: number; capped: boolean; maxDays?: number; dueNow?: boolean }) {
+  // When the classifier flags failure now, the gauge is full red "service now" — it overrides
+  // the statistical days-left estimate.
+  const pct = dueNow ? 100 : capped ? 100 : Math.min(100, (rulDays / maxDays) * 100);
+  const color = dueNow ? "#dc2626" : riskScoreColor(100 - pct);
   return (
     <div className="relative">
       <ResponsiveContainer width="100%" height={160}>
@@ -653,8 +689,17 @@ export function RulGauge({ rulDays, capped, maxDays = 180 }: { rulDays: number; 
         </RadialBarChart>
       </ResponsiveContainer>
       <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-4">
-        <span className="text-3xl font-bold text-slate-900 dark:text-white">{capped ? "1yr+" : Math.round(rulDays)}</span>
-        <span className="text-xs text-slate-500 dark:text-slate-400">days left</span>
+        {dueNow ? (
+          <>
+            <span className="text-2xl font-bold text-rose-600 dark:text-rose-400">Now</span>
+            <span className="text-xs text-rose-500 dark:text-rose-400">service due</span>
+          </>
+        ) : (
+          <>
+            <span className="text-3xl font-bold text-slate-900 dark:text-white">{capped ? "1yr+" : Math.round(rulDays)}</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">days left</span>
+          </>
+        )}
       </div>
     </div>
   );
