@@ -1,20 +1,16 @@
 import { create } from "zustand";
 
 // --- Sidebar collapse ---
-function readSidebarCollapsed(): boolean {
-  if (typeof window !== "undefined") {
-    try { return localStorage.getItem("sidebar-collapsed") === "true"; } catch { /* */ }
-  }
-  return false;
-}
-
+// NOTE: initial state must be identical on server and client — the first client render
+// participates in hydration, so reading localStorage here causes a hydration mismatch.
+// The saved value is applied post-mount by hydrateClientState() (called from Providers).
 interface SidebarState {
   collapsed: boolean;
   toggle: () => void;
 }
 
 export const useSidebar = create<SidebarState>((set, get) => ({
-  collapsed: readSidebarCollapsed(),
+  collapsed: false,
   toggle: () => {
     const next = !get().collapsed;
     try { localStorage.setItem("sidebar-collapsed", String(next)); } catch { /* */ }
@@ -40,13 +36,6 @@ export const useControls = create<ControlsState>((set) => ({
 // --- Theme (light / dark) ---
 type Theme = "light" | "dark";
 
-function readInitialTheme(): Theme {
-  if (typeof document !== "undefined") {
-    return document.documentElement.classList.contains("dark") ? "dark" : "light";
-  }
-  return "light";
-}
-
 function applyTheme(theme: Theme) {
   if (typeof document !== "undefined") {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -64,8 +53,10 @@ interface ThemeState {
   setTheme: (theme: Theme) => void;
 }
 
+// Same rule as the sidebar: start with the server value ("light"); the real theme (already
+// applied to <html> before paint by the layout's inline script) is synced in after mount.
 export const useTheme = create<ThemeState>((set, get) => ({
-  theme: readInitialTheme(),
+  theme: "light",
   toggleTheme: () => {
     const next: Theme = get().theme === "dark" ? "light" : "dark";
     applyTheme(next);
@@ -76,3 +67,16 @@ export const useTheme = create<ThemeState>((set, get) => ({
     set({ theme });
   },
 }));
+
+// --- Post-hydration sync ---
+// Runs once after mount (from Providers). Effects fire after hydration completes, so these
+// updates are ordinary re-renders — never a server/client mismatch.
+export function hydrateClientState() {
+  try {
+    if (localStorage.getItem("sidebar-collapsed") === "true") {
+      useSidebar.setState({ collapsed: true });
+    }
+  } catch { /* ignore */ }
+  const dark = document.documentElement.classList.contains("dark");
+  if (dark) useTheme.setState({ theme: "dark" });
+}

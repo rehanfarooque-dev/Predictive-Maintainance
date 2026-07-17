@@ -355,6 +355,31 @@ export function MaintenanceProjectionChart({
   );
 }
 
+// A ReferenceLine label that hugs the line instead of centering on it, so an edge marker
+// never spills left over the y-axis "100%" tick. Flips to the left side near the right edge.
+function EdgeMarkerLabel({
+  viewBox, value, color, weight = 700, align = "left", dyTop = -7,
+}: {
+  viewBox?: { x?: number; y?: number };
+  value: string; color: string; weight?: number; align?: "left" | "right"; dyTop?: number;
+}) {
+  const vx = viewBox?.x ?? 0;
+  const vy = viewBox?.y ?? 0;
+  const right = align === "right";
+  return (
+    <text
+      x={vx + (right ? -7 : 7)}
+      y={vy + dyTop}
+      textAnchor={right ? "end" : "start"}
+      fontSize={11}
+      fontWeight={weight}
+      fill={color}
+    >
+      {value}
+    </text>
+  );
+}
+
 // ─── ClassifierRiskChart ────────────────────────────────────────────────────
 // The 12-hour failure PROBABILITY over time (the XGBoost classifier output), as %.
 // Flat near 0 when healthy, spiking toward 100% when sensor patterns look dangerous —
@@ -371,9 +396,12 @@ export function ClassifierRiskChart({
   const ct = useChartTheme();
   const asOfMs = asOf ? new Date(asOf).getTime() : null;
 
-  // Full history: everything BEFORE the selected date as well as after it, so the past the
-  // model already scored is visible. The as-of marker splits the two.
-  const vis = data;
+  // Start exactly at the selected date — show only that date onward, nothing before it.
+  const vis = useMemo(() => {
+    if (!asOfMs) return data;
+    const f = data.filter((p) => new Date(p.datetime).getTime() >= asOfMs);
+    return f.length > 1 ? f : data;
+  }, [data, asOfMs]);
 
   const pts = useMemo(
     () => vis.map((p) => ({ ts: new Date(p.datetime).getTime(), risk: p.risk * 100 })),
@@ -415,24 +443,21 @@ export function ClassifierRiskChart({
     <div>
       {asOfMs && (
         <div className="mb-2 text-[11px] font-medium text-indigo-500 dark:text-indigo-400">
-          Full history · you are on {fmtTsLong(asOfMs)} · {events.length
-            ? <>{caughtCount}/{events.length} failures caught</>
-            : "no failures in this period"}
+          From {fmtTsLong(asOfMs)} onward · {events.length
+            ? <>{caughtCount}/{events.length} failures caught in view</>
+            : "no failures in this window"}
         </div>
       )}
       <ResponsiveContainer width="100%" height={220}>
         <AreaChart data={pts} margin={{ top: 14, right: 16, bottom: 4, left: -6 }}>
           <defs>
             <linearGradient id="clsGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.6} />
+              <stop offset="0%" stopColor="#fb7185" stopOpacity={0.7} />
+              <stop offset="45%" stopColor="#f43f5e" stopOpacity={0.22} />
               <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid stroke={ct.grid} vertical={false} />
-          {/* Everything left of the selected date = already-happened history */}
-          {asOfMs && asOfMs > domainMin && (
-            <ReferenceArea x1={domainMin} x2={asOfMs} fill="#64748b" fillOpacity={0.07} ifOverflow="extendDomain" />
-          )}
           <XAxis
             dataKey="ts"
             type="number"
@@ -467,13 +492,25 @@ export function ClassifierRiskChart({
             strokeDasharray="5 4"
             label={{ value: `alert (${Math.round(threshold * 100)}%)`, position: "insideTopRight", fontSize: 10, fill: "#6366f1" }}
           />
-          {/* "You are here" — splits the shaded past from the future */}
+          {/* "You are here" — the selected date, at the left edge (label hugs the line) */}
           {asOfMs && (
             <ReferenceLine x={asOfMs} stroke="#6366f1" strokeWidth={1.8} strokeDasharray="4 3"
-              label={{ value: `▼ ${fmtTs(asOfMs, 8760)}`, position: "top", fontSize: 10, fontWeight: 700, fill: "#6366f1" }} />
+              label={<EdgeMarkerLabel value={`▼ ${fmtTs(asOfMs, 8760)}`} color="#6366f1" weight={700} dyTop={11} />} />
           )}
-          <Area type="monotone" dataKey="risk" stroke="#f43f5e" strokeWidth={2} fill="url(#clsGrad)" dot={false} isAnimationActive={false} />
-          {/* Peak-of-spike markers: green ring = model caught it, amber = missed */}
+          <Area type="monotone" dataKey="risk" stroke="#f43f5e" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" fill="url(#clsGrad)" dot={false} activeDot={{ r: 3.5, fill: "#f43f5e", stroke: "#ffffff", strokeWidth: 1.5 }} isAnimationActive={false} />
+          {/* Peak-of-spike markers: green ring = model caught it, amber = missed (soft halo behind) */}
+          {events.map((e, i) => (
+            <ReferenceDot
+              key={`h${i}`}
+              x={e.ts}
+              y={e.risk}
+              r={9}
+              fill={e.caught ? "#10b981" : "#f59e0b"}
+              fillOpacity={0.16}
+              stroke="none"
+              ifOverflow="extendDomain"
+            />
+          ))}
           {events.map((e, i) => (
             <ReferenceDot
               key={`d${i}`}
@@ -493,11 +530,6 @@ export function ClassifierRiskChart({
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#10b981" }} /> failure the model caught</span>
         {caughtCount < events.length && (
           <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: "#f59e0b" }} /> failure it missed</span>
-        )}
-        {asOfMs && (
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2.5 w-4 rounded-sm bg-slate-500/[0.16]" /> past (before the selected date)
-          </span>
         )}
         <span>· {caughtCount}/{events.length} caught</span>
       </div>
@@ -588,11 +620,16 @@ export function SurvivalCurveChart({
 
   return (
     <ResponsiveContainer width="100%" height={290}>
-      <ComposedChart data={merged} margin={{ top: 30, right: 22, bottom: 28, left: -6 }}>
+      <ComposedChart data={merged} margin={{ top: 34, right: 22, bottom: 28, left: -6 }}>
         <defs>
           <linearGradient id="survGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.45} />
+            <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.55} />
+            <stop offset="55%" stopColor="#8b5cf6" stopOpacity={0.16} />
             <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id="survStroke" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#7c3aed" />
+            <stop offset="100%" stopColor="#a855f7" />
           </linearGradient>
         </defs>
         <CartesianGrid stroke={ct.grid} vertical={false} />
@@ -632,13 +669,13 @@ export function SurvivalCurveChart({
               : `day +${d}`
           }
         />
-        {/* likely-range (confidence) band */}
+        {/* likely-range (confidence) band — label at the bottom, clear of the Replace marker up top */}
         <ReferenceArea
           x1={ciLow}
           x2={ciHigh}
           fill="#8b5cf6"
-          fillOpacity={0.1}
-          label={{ value: "typical range", position: "insideTopLeft", fontSize: 9, fill: "#94a3b8" }}
+          fillOpacity={0.09}
+          label={{ value: "typical range", position: "insideBottom", fontSize: 9, fontWeight: 600, fill: "#a78bfa" }}
         />
         {/* 50% guide line */}
         <ReferenceLine
@@ -648,9 +685,18 @@ export function SurvivalCurveChart({
           label={{ value: "50% — median life", position: "insideBottomRight", fontSize: 9, fill: "#94a3b8" }}
         />
         {/* curves */}
-        <Area type="monotone" dataKey="model" name="this machine" stroke="#8b5cf6" fill="url(#survGrad)" strokeWidth={2.4} />
+        <Area
+          type="monotone"
+          dataKey="model"
+          name="this machine"
+          stroke="url(#survStroke)"
+          fill="url(#survGrad)"
+          strokeWidth={2.6}
+          strokeLinecap="round"
+          activeDot={{ r: 4, fill: "#8b5cf6", stroke: "#ffffff", strokeWidth: 1.5 }}
+        />
         {baseline && (
-          <Line type="monotone" dataKey="baseline" name="typical machine" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={1.4} />
+          <Line type="monotone" dataKey="baseline" name="typical machine" stroke="#94a3b8" strokeDasharray="5 4" dot={false} strokeWidth={1.4} strokeLinecap="round" />
         )}
         {/* Replace marker — at "now" (day 0) when the classifier flags failure, else at RUL */}
         {(dueNow || rulDays > 0) && (
@@ -658,8 +704,20 @@ export function SurvivalCurveChart({
             x={markerDays}
             stroke={dueNow ? "#dc2626" : "#f43f5e"}
             strokeWidth={dueNow ? 2.4 : 1.8}
-            label={{ value: rulLineLabel, position: "top", fontSize: 11, fontWeight: dueNow ? 800 : 700, fill: dueNow ? "#dc2626" : "#f43f5e" }}
+            label={
+              <EdgeMarkerLabel
+                value={rulLineLabel}
+                color={dueNow ? "#dc2626" : "#f43f5e"}
+                weight={dueNow ? 800 : 700}
+                align={markerDays > maxDays * 0.62 ? "right" : "left"}
+                dyTop={-9}
+              />
+            }
           />
+        )}
+        {/* soft halo behind the marker dot for a subtle glow */}
+        {(dueNow || rulDays > 0) && (
+          <ReferenceDot x={markerDays} y={dueNow ? 1.0 : 0.5} r={dueNow ? 11 : 9} fill={dueNow ? "#dc2626" : "#f43f5e"} fillOpacity={0.16} stroke="none" ifOverflow="extendDomain" />
         )}
         {(dueNow || rulDays > 0) && (
           <ReferenceDot x={markerDays} y={dueNow ? 1.0 : 0.5} r={dueNow ? 5.5 : 4.5} fill={dueNow ? "#dc2626" : "#f43f5e"} stroke="#ffffff" strokeWidth={1.5} ifOverflow="extendDomain" />

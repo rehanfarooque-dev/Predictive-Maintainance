@@ -203,44 +203,6 @@ export default function PerformancePage() {
           />
         </GlassCard>
       )}
-
-      {/* ── Model configuration ── */}
-      <GlassCard className="p-5">
-        <SectionTitle title="Model configuration" subtitle="What was trained, and how." />
-        <div className="grid gap-6 lg:grid-cols-2">
-          <dl className="space-y-2 text-sm">
-            {[
-              ["Algorithm", data.model.algorithm],
-              ["Prediction horizon", `${data.model.horizon_hours} hours`],
-              ["Features (after selection)", String(data.model.n_features)],
-              ["Test split", `${Math.round(data.model.test_size_pct * 100)}% chronological (no shuffle)`],
-              ["Test rows", data.n_test_rows.toLocaleString()],
-              ["Real failures in test", data.n_positives.toLocaleString()],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between gap-4 border-b border-slate-100 pb-2 last:border-0 dark:border-white/5">
-                <dt className="text-slate-500 dark:text-slate-400">{k}</dt>
-                <dd className="text-right font-medium text-slate-800 dark:text-slate-200">{v}</dd>
-              </div>
-            ))}
-          </dl>
-
-          {Object.keys(data.model.best_params).length > 0 && (
-            <div>
-              <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Tuned hyperparameters (Optuna)</p>
-              <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
-                {Object.entries(data.model.best_params).map(([k, v]) => (
-                  <div key={k} className="flex justify-between rounded-lg bg-slate-100 px-2.5 py-1.5 dark:bg-white/5">
-                    <span className="text-slate-500 dark:text-slate-400">{k}</span>
-                    <span className="font-medium tabular-nums text-slate-800 dark:text-slate-200">
-                      {typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(3)) : String(v)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </GlassCard>
     </div>
   );
 }

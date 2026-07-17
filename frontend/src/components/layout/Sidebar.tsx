@@ -147,7 +147,7 @@ export function Sidebar() {
             )}
           >
             <span className="block text-[15px] font-bold leading-tight tracking-tight text-slate-900 dark:text-white">
-              Sentinel
+              CalPred
             </span>
             <span className="block text-[10px] font-medium uppercase tracking-[0.14em] text-indigo-500/80 dark:text-indigo-300/70">
               Predictive maintenance

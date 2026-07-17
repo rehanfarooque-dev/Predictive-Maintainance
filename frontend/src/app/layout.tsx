@@ -15,10 +15,12 @@ const themeScript = `try{var t=localStorage.getItem('theme');if(t==='dark'){docu
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
-      </head>
       <body className="min-h-full">
+        {/* Theme-before-paint. Emitted as raw HTML so React never renders a <script> element
+            itself — React 19 warns about (and won't execute) inline scripts in the component
+            tree. The browser runs this while parsing the SSR stream, before anything below
+            it paints, so the saved dark theme applies with no flash. */}
+        <div hidden dangerouslySetInnerHTML={{ __html: `<script>${themeScript}</script>` }} />
         <Providers>
           <div className="flex min-h-screen">
             <Sidebar />
